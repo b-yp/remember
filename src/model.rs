@@ -98,6 +98,31 @@ impl ReminderItem {
         let total = self.interval_secs.max(1) as f32;
         (cur / total).clamp(0.0, 1.0)
     }
+
+    /// 格式化循环周期（如 "30m"、"1h"、"1h30m"）
+    pub fn format_interval(&self) -> String {
+        let mins = self.interval_secs / 60;
+        if mins >= 60 {
+            let h = mins / 60;
+            let m = mins % 60;
+            if m == 0 {
+                format!("{}h", h)
+            } else {
+                format!("{}h{}m", h, m)
+            }
+        } else {
+            format!("{}m", mins)
+        }
+    }
+
+    /// 就地更新循环周期时长（分钟），并将超出新周期的倒计时拉齐
+    pub fn update_interval_mins(&mut self, mins: u32) {
+        let new_secs = mins.max(1) * 60;
+        self.interval_secs = new_secs;
+        if self.remaining_secs > new_secs {
+            self.remaining_secs = new_secs;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -149,5 +174,13 @@ mod tests {
         assert!(!expired);
         assert_eq!(item.overdue_secs, 1);
         assert_eq!(item.format_remaining(), "超时 00:01");
+
+        // 周期格式化测试
+        assert_eq!(item.format_interval(), "1m");
+        item.update_interval_mins(90);
+        assert_eq!(item.interval_secs, 90 * 60);
+        assert_eq!(item.format_interval(), "1h30m");
+        item.update_interval_mins(120);
+        assert_eq!(item.format_interval(), "2h");
     }
 }

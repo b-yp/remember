@@ -6,9 +6,9 @@ pub mod model;
 
 use std::time::Duration;
 use nsh_core::prelude::*;
-use nsh_core::element::desktop;
+use nsh_core::element::{desktop, input};
 use nsh_core::desktop::{WindowFrame, WindowLevel};
-use nsh_base::{SliderValue, slider};
+use nsh_base::{SliderValue, slider, collapsible};
 use model::ReminderItem;
 
 #[cfg(target_os = "windows")]
@@ -134,13 +134,22 @@ fn setup_floating_window() {
 pub const WINDOW_WIDTH: f32 = 320.0;
 pub const BASE_CONTENT_HEIGHT: f32 = 102.0; // padding (28) + header (30) + footer (22) + gaps (22)
 pub const ITEM_ROW_HEIGHT: f32 = 46.0;
-pub const DRAWER_HEIGHT: f32 = 148.0;
+pub const DRAWER_BASE_HEIGHT: f32 = 138.0;
+pub const DRAWER_CUSTOM_HEIGHT: f32 = 208.0;
 
-/// 根据提醒项目数量和设置抽屉展开状态精确计算窗口高度
-pub fn calculate_window_height(item_count: usize, is_drawer_open: bool) -> f32 {
+/// 根据提醒项目数量、设置抽屉展开状态以及自定义表单展开状态精确计算窗口高度
+pub fn calculate_window_height(item_count: usize, is_drawer_open: bool, is_custom_open: bool) -> f32 {
     let items_h = item_count as f32 * ITEM_ROW_HEIGHT;
-    let drawer_h = if is_drawer_open { DRAWER_HEIGHT } else { 0.0 };
-    (BASE_CONTENT_HEIGHT + items_h + drawer_h).clamp(195.0, 560.0)
+    let drawer_h = if is_drawer_open {
+        if is_custom_open {
+            DRAWER_BASE_HEIGHT + DRAWER_CUSTOM_HEIGHT
+        } else {
+            DRAWER_BASE_HEIGHT
+        }
+    } else {
+        0.0
+    };
+    (BASE_CONTENT_HEIGHT + items_h + drawer_h).clamp(195.0, 680.0)
 }
 
 /// 触发倒计时到期提醒（声音、系统原生通知、窗口置顶唤起）
@@ -218,6 +227,7 @@ pub fn App() -> impl IntoElement {
     // 全局暂停状态与设置面板展开状态，以及窗口不透明度状态 (0.2 ~ 1.0)
     let is_all_paused = signal(false);
     let show_settings = signal(false);
+    let show_custom_form = signal(false);
     let opacity = signal(1.0_f32);
 
     // 窗口不透明度响应式联动：当 opacity 发生变化时，实时调用原生窗口 API
@@ -229,8 +239,9 @@ pub fn App() -> impl IntoElement {
     // 窗口高度动态自适应：点击设置抽屉或增减提醒项时动态调节高度，并支持平滑滚动，杜绝遮挡
     effect(move || {
         let is_open = show_settings.get();
+        let is_custom = show_custom_form.get();
         let count = items.get().len();
-        let target_h = calculate_window_height(count, is_open);
+        let target_h = calculate_window_height(count, is_open, is_custom);
 
         desktop::set_frame(WindowFrame {
             width: Some(px(WINDOW_WIDTH)),
@@ -272,7 +283,7 @@ pub fn App() -> impl IntoElement {
         // 1. 顶栏：通用「reminder 提醒」金黄微标与标题，右侧挂件操作按钮组（暂停、设置、关闭）
         .child(render_header(items, is_all_paused, show_settings))
         // 2. 新建/设置抽屉（点击顶部设置/新建时平滑展开，窗口自动变大，支持不透明度调节与快捷提醒添加）
-        .child(render_drawer(show_settings, items, opacity))
+        .child(render_drawer(show_settings, show_custom_form, items, opacity))
         // 3. 核心提醒列表（基于 each 响应式驱动更新与增减）
         .child(render_items(items))
         // 4. 底部状态行（通用统计：「进行中 X 项 · 今日打卡 Y 次」，若处于半透明状态则额外指示不透明度）
@@ -465,16 +476,56 @@ fn render_item_row(
                             .h(px(36.0)),
                         ),
                 )
-                // 标题与倒计时（到期时红字警示，纯净文本与矢量图标，零 Emoji）
+                // 标题与倒计时（包含周期微标，点击周期可快速切换常见时长，到期时红字警示）
                 .child(
                     view()
                         .flex_col()
                         .justify_center()
                         .gap(px(2.0))
                         .child(
-                            text(move || item_sig.get().name.clone())
-                                .text_size(px(13.0))
-                                .text_color(white().alpha(0.92)),
+                            view()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(5.0))
+                                .child(
+                                    text(move || item_sig.get().name.clone())
+                                        .text_size(px(13.0))
+                                        .text_color(white().alpha(0.92)),
+                                )
+                                .child(
+                                    view()
+                                        .window_drag(false)
+                                        .px(px(4.0))
+                                        .py(px(0.5))
+                                        .rounded(px(3.0))
+                                        .bg(white().alpha(0.06))
+                                        .border_1()
+                                        .border_color(white().alpha(0.08))
+                                        .active(|s| s.opacity(0.5))
+                                        .on_press(move || {
+                                            items.update(|list| {
+                                                if let Some(it) = list.iter_mut().find(|x| x.id == item_id) {
+                                                    let cur_m = it.interval_secs / 60;
+                                                    let next_m = match cur_m {
+                                                        0..=19 => 20,
+                                                        20..=24 => 25,
+                                                        25..=29 => 30,
+                                                        30..=44 => 45,
+                                                        45..=59 => 60,
+                                                        60..=89 => 90,
+                                                        90..=119 => 120,
+                                                        _ => 15,
+                                                    };
+                                                    it.update_interval_mins(next_m);
+                                                }
+                                            });
+                                        })
+                                        .child(
+                                            text(move || format!("{}m", item_sig.get().interval_secs / 60))
+                                                .text_size(px(10.0))
+                                                .text_color(white().alpha(0.50)),
+                                        ),
+                                ),
                         )
                         .child(
                             view()
@@ -633,12 +684,18 @@ fn render_footer(items: Signal<Vec<ReminderItem>>, opacity: Signal<f32>) -> impl
         )
 }
 
-/// 设置与添加新提醒抽屉（点击齿轮展开，支持基于 NSH 原生 Slider 的窗口不透明度调节与快捷添加提醒项）
+/// 设置与添加新提醒抽屉（点击齿轮展开，支持窗口不透明度调节、推荐快速开启与优雅折叠的自定义新提醒）
 fn render_drawer(
     show: Signal<bool>,
+    show_custom_form: Signal<bool>,
     items: Signal<Vec<ReminderItem>>,
     opacity: Signal<f32>,
 ) -> impl IntoElement {
+    let custom_name = signal(String::new());
+    let custom_mins_str = signal("30".to_string());
+    let custom_icon = signal("bell".to_string());
+    let error_tip = signal(Option::<String>::None);
+
     when(
         move || show.get(),
         move || {
@@ -727,43 +784,544 @@ fn render_drawer(
                         .border_t_1()
                         .border_color(white().alpha(0.08)),
                 )
-                // 2. 快捷添加预设提醒区
-                .child(
-                    text("点击快捷添加通用提醒：")
-                        .text_size(px(11.0))
-                        .text_color(white().alpha(0.5)),
-                )
+                // 2. 常用推荐快速开启（单例防重：已在运行的显示微勾选，不重复添加）
                 .child(
                     view()
-                        .flex_row()
-                        .flex_wrap()
+                        .flex_col()
                         .gap(px(4.0))
-                        .children(PRESETS.iter().map(|preset| {
-                            let preset_name = preset.name;
-                            let preset_icon = preset.icon_key;
-                            let preset_mins = preset.minutes;
-
+                        .child(
+                            text("常用推荐（单例开启，不重复添加）：")
+                                .text_size(px(11.0))
+                                .text_color(white().alpha(0.50)),
+                        )
+                        .child(
                             view()
-                                .px(px(6.0))
-                                .py(px(3.0))
+                                .flex_row()
+                                .flex_wrap()
+                                .gap(px(4.0))
+                                .children(PRESETS.iter().map(|preset| {
+                                    let preset_name = preset.name;
+                                    let preset_icon = preset.icon_key;
+                                    let preset_mins = preset.minutes;
+
+                                    view()
+                                        .px(px(6.0))
+                                        .py(px(2.5))
+                                        .rounded(px(5.0))
+                                        .bg(move || {
+                                            let running = items.get().iter().any(|x| x.name == preset_name);
+                                            if running {
+                                                hsl(145.0, 60.0, 25.0).alpha(0.35)
+                                            } else {
+                                                white().alpha(0.08)
+                                            }
+                                        })
+                                        .border_1()
+                                        .border_color(move || {
+                                            let running = items.get().iter().any(|x| x.name == preset_name);
+                                            if running {
+                                                hsl(145.0, 70.0, 45.0).alpha(0.40)
+                                            } else {
+                                                white().alpha(0.08)
+                                            }
+                                        })
+                                        .active(|s| s.opacity(0.6))
+                                        .on_press(move || {
+                                            let running = items.get().iter().any(|x| x.name == preset_name);
+                                            if !running {
+                                                items.update(|list| {
+                                                    list.push(ReminderItem::new(
+                                                        preset_name,
+                                                        preset_icon,
+                                                        preset_mins * 60,
+                                                    ));
+                                                });
+                                            }
+                                        })
+                                        .child(
+                                            text(move || {
+                                                let running = items.get().iter().any(|x| x.name == preset_name);
+                                                if running {
+                                                    format!("✓ {} ({}m)", preset_name, preset_mins)
+                                                } else {
+                                                    format!("{} ({}m)", preset_name, preset_mins)
+                                                }
+                                            })
+                                            .text_size(px(10.5))
+                                            .text_color(move || {
+                                                let running = items.get().iter().any(|x| x.name == preset_name);
+                                                if running {
+                                                    hsl(145.0, 75.0, 72.0)
+                                                } else {
+                                                    white().alpha(0.85)
+                                                }
+                                            }),
+                                        )
+                                })),
+                        ),
+                )
+                // 细分割线
+                .child(
+                    view()
+                        .w_full()
+                        .my(px(2.0))
+                        .border_t_1()
+                        .border_color(white().alpha(0.08)),
+                )
+                // 3. 基于 Collapsible 的自定义新提醒区域：默认收起，点击平滑展开完整配置面板
+                .child(
+                    collapsible()
+                        .open(show_custom_form)
+                        .reveal(true)
+                        // Trigger: 折叠栏触发条
+                        .child(
+                            view()
+                                .w_full()
+                                .px(px(8.0))
+                                .py(px(4.0))
                                 .rounded(px(5.0))
-                                .bg(white().alpha(0.08))
-                                .active(|s| s.opacity(0.5))
-                                .on_press(move || {
-                                    items.update(|list| {
-                                        list.push(ReminderItem::new(
-                                            preset_name,
-                                            preset_icon,
-                                            preset_mins * 60,
-                                        ));
-                                    });
+                                .bg(move || {
+                                    if show_custom_form.get() {
+                                        white().alpha(0.09)
+                                    } else {
+                                        white().alpha(0.04)
+                                    }
                                 })
+                                .border_1()
+                                .border_color(move || {
+                                    if show_custom_form.get() {
+                                        hsl(45.0, 90.0, 60.0).alpha(0.35)
+                                    } else {
+                                        white().alpha(0.06)
+                                    }
+                                })
+                                .active(|s| s.opacity(0.6))
+                                .on_press(move || show_custom_form.update(|v| *v = !*v))
+                                .flex_row()
+                                .items_center()
+                                .justify_between()
                                 .child(
-                                    text(format!("+ {} ({}m)", preset_name, preset_mins))
-                                        .text_size(px(11.0))
-                                        .text_color(white().alpha(0.85)),
+                                    view()
+                                        .flex_row()
+                                        .items_center()
+                                        .gap(px(5.0))
+                                        .child(icons::icon_svg(
+                                            icons::ICON_EDIT,
+                                            11.5,
+                                            hsl(45.0, 90.0, 62.0),
+                                        ))
+                                        .child(
+                                            text("自定义新提醒")
+                                                .text_size(px(11.0))
+                                                .text_color(hsl(45.0, 90.0, 65.0)),
+                                        ),
                                 )
-                        })),
+                                .child(
+                                    view()
+                                        .flex_row()
+                                        .items_center()
+                                        .gap(px(3.0))
+                                        .child(
+                                            text(move || if show_custom_form.get() { "收起" } else { "配置" })
+                                                .text_size(px(10.5))
+                                                .text_color(white().alpha(0.45)),
+                                        )
+                                        .child(
+                                            icons::dynamic_icon_svg(
+                                                move || {
+                                                    if show_custom_form.get() {
+                                                        icons::ICON_CHEVRON_UP
+                                                    } else {
+                                                        icons::ICON_CHEVRON_DOWN
+                                                    }
+                                                },
+                                                11.0,
+                                                white().alpha(0.45),
+                                            ),
+                                        ),
+                                ),
+                        )
+                        // Content: 展开后的专属精美配置面板
+                        .content(
+                            view()
+                                .w_full()
+                                .mt(px(4.0))
+                                .p(px(8.0))
+                                .rounded(px(6.0))
+                                .bg(hsl(225.0, 10.0, 12.0))
+                                .border_1()
+                                .border_color(white().alpha(0.08))
+                                .flex_col()
+                                .gap(px(6.0))
+                                // Field 1: 提醒名称
+                                .child(
+                                    view()
+                                        .flex_col()
+                                        .gap(px(3.0))
+                                        .child(
+                                            view()
+                                                .flex_row()
+                                                .items_center()
+                                                .justify_between()
+                                                .child(
+                                                    text("提醒事项名称")
+                                                        .text_size(px(10.0))
+                                                        .text_color(white().alpha(0.45)),
+                                                )
+                                                .child(
+                                                    text(move || error_tip.get().unwrap_or_default())
+                                                        .text_size(px(10.0))
+                                                        .text_color(hsl(0.0, 85.0, 70.0)),
+                                                ),
+                                        )
+                                        .child(
+                                            input()
+                                                .placeholder("如：站姿切换、滴眼药水、工位通风")
+                                                .value(move || custom_name.get())
+                                                .on_change(move |s: &str| {
+                                                    custom_name.set(s.to_string());
+                                                    error_tip.set(None);
+                                                })
+                                                .w_full()
+                                                .h(px(25.0))
+                                                .px(px(8.0))
+                                                .rounded(px(4.0))
+                                                .bg(white().alpha(0.06))
+                                                .border_1()
+                                                .border_color(white().alpha(0.12))
+                                                .text_size(px(11.0))
+                                                .text_color(white().alpha(0.95))
+                                                .placeholder_color(white().alpha(0.30)),
+                                        ),
+                                )
+                                // Field 2: 循环周期（键盘直接输入 + 1分钟微调 + 快捷填入）
+                                .child(
+                                    view()
+                                        .flex_col()
+                                        .gap(px(3.0))
+                                        .child(
+                                            view()
+                                                .flex_row()
+                                                .items_center()
+                                                .justify_between()
+                                                .child(
+                                                    text("循环周期")
+                                                        .text_size(px(10.0))
+                                                        .text_color(white().alpha(0.45)),
+                                                )
+                                                .child(
+                                                    view()
+                                                        .flex_row()
+                                                        .items_center()
+                                                        .gap(px(3.0))
+                                                        // 减 1 分钟
+                                                        .child(
+                                                            view()
+                                                                .w(px(18.0))
+                                                                .h(px(19.0))
+                                                                .rounded(px(3.0))
+                                                                .bg(white().alpha(0.08))
+                                                                .items_center()
+                                                                .justify_center()
+                                                                .active(|s| s.opacity(0.5))
+                                                                .on_press(move || {
+                                                                    let cur = custom_mins_str.get().parse::<u32>().unwrap_or(30);
+                                                                    let next = cur.saturating_sub(1).max(1);
+                                                                    custom_mins_str.set(next.to_string());
+                                                                    error_tip.set(None);
+                                                                })
+                                                                .child(text("-").text_size(px(11.0)).text_color(white().alpha(0.70))),
+                                                        )
+                                                        // 数字文本输入框：支持点击键盘任意输入
+                                                        .child(
+                                                            input()
+                                                                .placeholder("30")
+                                                                .value(move || custom_mins_str.get())
+                                                                .on_change(move |s: &str| {
+                                                                    let digits: String = s.chars().filter(|c| c.is_ascii_digit()).take(4).collect();
+                                                                    custom_mins_str.set(digits);
+                                                                    error_tip.set(None);
+                                                                })
+                                                                .w(px(38.0))
+                                                                .h(px(19.0))
+                                                                .px(px(4.0))
+                                                                .rounded(px(3.0))
+                                                                .bg(white().alpha(0.08))
+                                                                .border_1()
+                                                                .border_color(hsl(45.0, 90.0, 60.0).alpha(0.40))
+                                                                .text_size(px(11.0))
+                                                                .text_color(hsl(45.0, 90.0, 65.0)),
+                                                        )
+                                                        // 加 1 分钟
+                                                        .child(
+                                                            view()
+                                                                .w(px(18.0))
+                                                                .h(px(19.0))
+                                                                .rounded(px(3.0))
+                                                                .bg(white().alpha(0.08))
+                                                                .items_center()
+                                                                .justify_center()
+                                                                .active(|s| s.opacity(0.5))
+                                                                .on_press(move || {
+                                                                    let cur = custom_mins_str.get().parse::<u32>().unwrap_or(30);
+                                                                    let next = (cur + 1).min(1440);
+                                                                    custom_mins_str.set(next.to_string());
+                                                                    error_tip.set(None);
+                                                                })
+                                                                .child(text("+").text_size(px(11.0)).text_color(white().alpha(0.70))),
+                                                        )
+                                                        .child(
+                                                            text("分钟")
+                                                                .text_size(px(10.0))
+                                                                .text_color(white().alpha(0.50)),
+                                                        ),
+                                                ),
+                                        )
+                                        // 快捷填入颗粒度胶囊
+                                        .child(
+                                            view()
+                                                .flex_row()
+                                                .items_center()
+                                                .justify_between()
+                                                .gap(px(3.0))
+                                                .child(
+                                                    text("快捷填入:")
+                                                        .text_size(px(9.5))
+                                                        .text_color(white().alpha(0.35)),
+                                                )
+                                                .child(
+                                                    view()
+                                                        .flex_row()
+                                                        .gap(px(3.0))
+                                                        .children([15, 25, 30, 45, 60, 90].iter().map(|&mins| {
+                                                            view()
+                                                                .px(px(5.0))
+                                                                .py(px(1.5))
+                                                                .rounded(px(3.0))
+                                                                .bg(move || {
+                                                                    if custom_mins_str.get() == mins.to_string() {
+                                                                        hsl(45.0, 90.0, 60.0).alpha(0.25)
+                                                                    } else {
+                                                                        white().alpha(0.05)
+                                                                    }
+                                                                })
+                                                                .border_1()
+                                                                .border_color(move || {
+                                                                    if custom_mins_str.get() == mins.to_string() {
+                                                                        hsl(45.0, 90.0, 60.0).alpha(0.60)
+                                                                    } else {
+                                                                        white().alpha(0.04)
+                                                                    }
+                                                                })
+                                                                .active(|s| s.opacity(0.6))
+                                                                .on_press(move || {
+                                                                    custom_mins_str.set(mins.to_string());
+                                                                    error_tip.set(None);
+                                                                })
+                                                                .child(
+                                                                    text(format!("{}m", mins))
+                                                                        .text_size(px(9.5))
+                                                                        .text_color(move || {
+                                                                            if custom_mins_str.get() == mins.to_string() {
+                                                                                hsl(45.0, 90.0, 65.0)
+                                                                            } else {
+                                                                                white().alpha(0.50)
+                                                                            }
+                                                                        }),
+                                                                )
+                                                        })),
+                                                ),
+                                        ),
+                                )
+                                // Field 3: 图标分类与高光色（16 种丰富主题，两排 8 列精致排布）
+                                .child(
+                                    view()
+                                        .flex_col()
+                                        .gap(px(3.0))
+                                        .child(
+                                            text("图标主题")
+                                                .text_size(px(10.0))
+                                                .text_color(white().alpha(0.45)),
+                                        )
+                                        .child(
+                                            view()
+                                                .flex_col()
+                                                .gap(px(3.0))
+                                                // 第一排：生活与健康 (喝水、咖啡、活动、拉伸、护眼、服药、静心、暖阳)
+                                                .child(
+                                                    view()
+                                                        .flex_row()
+                                                        .items_center()
+                                                        .justify_between()
+                                                        .children([
+                                                            "droplet", "coffee", "walk", "activity",
+                                                            "eye", "pill", "heart", "sun",
+                                                        ].iter().map(|&ic| {
+                                                            let item_hsla = icons::get_item_hsla(ic);
+                                                            view()
+                                                                .w(px(24.0))
+                                                                .h(px(24.0))
+                                                                .rounded(px(4.0))
+                                                                .bg(move || {
+                                                                    if custom_icon.get() == ic {
+                                                                        item_hsla.alpha(0.20)
+                                                                    } else {
+                                                                        white().alpha(0.04)
+                                                                    }
+                                                                })
+                                                                .border_1()
+                                                                .border_color(move || {
+                                                                    if custom_icon.get() == ic {
+                                                                        item_hsla.alpha(0.80)
+                                                                    } else {
+                                                                        white().alpha(0.06)
+                                                                    }
+                                                                })
+                                                                .items_center()
+                                                                .justify_center()
+                                                                .active(|s| s.opacity(0.5))
+                                                                .on_press(move || custom_icon.set(ic.to_string()))
+                                                                .child(
+                                                                    icons::icon_svg(
+                                                                        icons::get_icon_markup(ic),
+                                                                        12.0,
+                                                                        move || {
+                                                                            if custom_icon.get() == ic {
+                                                                                item_hsla
+                                                                            } else {
+                                                                                white().alpha(0.40)
+                                                                            }
+                                                                        },
+                                                                    ),
+                                                                )
+                                                        })),
+                                                )
+                                                // 第二排：专注与日程 (番茄、阅读、办公、目标、小憩、轻食、排便、闹钟)
+                                                .child(
+                                                    view()
+                                                        .flex_row()
+                                                        .items_center()
+                                                        .justify_between()
+                                                        .children([
+                                                            "clock", "book", "laptop", "target",
+                                                            "moon", "apple", "toilet", "bell",
+                                                        ].iter().map(|&ic| {
+                                                            let item_hsla = icons::get_item_hsla(ic);
+                                                            view()
+                                                                .w(px(24.0))
+                                                                .h(px(24.0))
+                                                                .rounded(px(4.0))
+                                                                .bg(move || {
+                                                                    if custom_icon.get() == ic {
+                                                                        item_hsla.alpha(0.20)
+                                                                    } else {
+                                                                        white().alpha(0.04)
+                                                                    }
+                                                                })
+                                                                .border_1()
+                                                                .border_color(move || {
+                                                                    if custom_icon.get() == ic {
+                                                                        item_hsla.alpha(0.80)
+                                                                    } else {
+                                                                        white().alpha(0.06)
+                                                                    }
+                                                                })
+                                                                .items_center()
+                                                                .justify_center()
+                                                                .active(|s| s.opacity(0.5))
+                                                                .on_press(move || custom_icon.set(ic.to_string()))
+                                                                .child(
+                                                                    icons::icon_svg(
+                                                                        icons::get_icon_markup(ic),
+                                                                        12.0,
+                                                                        move || {
+                                                                            if custom_icon.get() == ic {
+                                                                                item_hsla
+                                                                            } else {
+                                                                                white().alpha(0.40)
+                                                                            }
+                                                                        },
+                                                                    ),
+                                                                )
+                                                        })),
+                                                ),
+                                        ),
+                                )
+                                // Field 4: 底部操作栏
+                                .child(
+                                    view()
+                                        .flex_row()
+                                        .items_center()
+                                        .justify_between()
+                                        .pt(px(2.0))
+                                        .child(
+                                            view()
+                                                .px(px(8.0))
+                                                .h(px(22.0))
+                                                .rounded(px(4.0))
+                                                .bg(white().alpha(0.06))
+                                                .items_center()
+                                                .justify_center()
+                                                .active(|s| s.opacity(0.5))
+                                                .on_press(move || {
+                                                    show_custom_form.set(false);
+                                                    error_tip.set(None);
+                                                })
+                                                .child(
+                                                    text("收起")
+                                                        .text_size(px(10.5))
+                                                        .text_color(white().alpha(0.50)),
+                                                ),
+                                        )
+                                        .child(
+                                            view()
+                                                .px(px(12.0))
+                                                .h(px(22.0))
+                                                .rounded(px(4.0))
+                                                .bg(hsl(45.0, 90.0, 56.0))
+                                                .items_center()
+                                                .justify_center()
+                                                .active(|s| s.opacity(0.6))
+                                                .on_press(move || {
+                                                    let name = custom_name.get().trim().to_string();
+                                                    if name.is_empty() {
+                                                        error_tip.set(Some("请输入名称".to_string()));
+                                                        return;
+                                                    }
+                                                    let mins = match custom_mins_str.get().trim().parse::<u32>() {
+                                                        Ok(m) if m > 0 => m,
+                                                        _ => {
+                                                            error_tip.set(Some("请输入有效分钟数(≥1)".to_string()));
+                                                            return;
+                                                        }
+                                                    };
+                                                    if mins > 1440 {
+                                                        error_tip.set(Some("时长上限为 1440 分钟 (24小时)".to_string()));
+                                                        return;
+                                                    }
+                                                    if items.get().iter().any(|x| x.name == name) {
+                                                        error_tip.set(Some("该提醒已在列表中".to_string()));
+                                                        return;
+                                                    }
+                                                    items.update(|list| {
+                                                        list.push(ReminderItem::new(
+                                                            &name,
+                                                            custom_icon.get(),
+                                                            mins * 60,
+                                                        ));
+                                                    });
+                                                    custom_name.set(String::new());
+                                                    error_tip.set(None);
+                                                    show_custom_form.set(false);
+                                                })
+                                                .child(
+                                                    text("开启提醒")
+                                                        .text_size(px(11.0))
+                                                        .text_color(hsl(225.0, 25.0, 10.0)),
+                                                ),
+                                        ),
+                                ),
+                        ),
                 )
         },
     )
@@ -776,21 +1334,26 @@ mod tests {
     #[test]
     fn test_window_height_calculation() {
         // 0 项且未展开抽屉
-        let h0 = calculate_window_height(0, false);
+        let h0 = calculate_window_height(0, false, false);
         assert_eq!(h0, 195.0); // 102.0 clamp 最小 195.0
 
         // 3 项未展开抽屉
-        let h3 = calculate_window_height(3, false);
+        let h3 = calculate_window_height(3, false, false);
         assert_eq!(h3, BASE_CONTENT_HEIGHT + 3.0 * ITEM_ROW_HEIGHT);
 
-        // 3 项展开抽屉（包含 180.0 抽屉高度）
-        let h3_open = calculate_window_height(3, true);
-        assert_eq!(h3_open, BASE_CONTENT_HEIGHT + 3.0 * ITEM_ROW_HEIGHT + DRAWER_HEIGHT);
-        assert!(h3_open > h3);
+        // 3 项展开基础抽屉（未展开自定义表单）
+        let h3_drawer = calculate_window_height(3, true, false);
+        assert_eq!(h3_drawer, BASE_CONTENT_HEIGHT + 3.0 * ITEM_ROW_HEIGHT + DRAWER_BASE_HEIGHT);
+        assert!(h3_drawer > h3);
 
-        // 超多项 clamp 最大值 560.0
-        let h_many = calculate_window_height(20, true);
-        assert_eq!(h_many, 560.0);
+        // 3 项展开抽屉且展开自定义表单
+        let h3_custom = calculate_window_height(3, true, true);
+        assert_eq!(h3_custom, BASE_CONTENT_HEIGHT + 3.0 * ITEM_ROW_HEIGHT + DRAWER_BASE_HEIGHT + DRAWER_CUSTOM_HEIGHT);
+        assert!(h3_custom > h3_drawer);
+
+        // 超多项 clamp 最大值 680.0
+        let h_many = calculate_window_height(20, true, true);
+        assert_eq!(h_many, 680.0);
     }
 
     #[test]
@@ -810,5 +1373,11 @@ mod tests {
         apply_window_opacity(0.50);
         apply_window_opacity(0.10); // 会自动 clamp 到 0.20
         apply_window_opacity(1.50); // 会自动 clamp 到 1.00
+    }
+
+    #[test]
+    fn test_input_element() {
+        use nsh_core::element::input;
+        let _ = input().placeholder("测试输入");
     }
 }

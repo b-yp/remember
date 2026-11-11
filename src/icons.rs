@@ -4,7 +4,7 @@
 use nsh_core::prelude::*;
 use nsh_core::element::{AdaptiveColor, ImageSrc};
 
-/// 渲染一个带有尺寸和指定颜色的矢量图标
+/// 渲染一个带有尺寸和指定颜色的静态矢量图标
 pub fn icon_svg<C>(markup: &'static str, size: f32, color_val: C) -> impl IntoElement
 where
     C: IntoReactive<AdaptiveColor>,
@@ -20,7 +20,24 @@ where
         )
 }
 
-/// 生成带有彩色圆环进度条和居中矢量图标的完整 SVG markup（参考图核心质感）
+/// 渲染一个根据闭包响应式切换 markup 的动态矢量图标
+pub fn dynamic_icon_svg<F, C>(markup_fn: F, size: f32, color_val: C) -> impl IntoElement
+where
+    F: Fn() -> &'static str + 'static,
+    C: IntoReactive<AdaptiveColor> + 'static,
+{
+    view()
+        .items_center()
+        .justify_center()
+        .text_color(color_val)
+        .child(
+            svg(move || ImageSrc::svg_markup(markup_fn()))
+                .w(px(size))
+                .h(px(size)),
+        )
+}
+
+/// 生成带有彩色圆环进度条和居中矢量图标的完整 SVG markup
 pub fn ring_progress_svg(icon_key: &str, progress: f32, color_hex: &str) -> String {
     let circumference = 87.964_f32; // 2 * PI * 14
     let progress = progress.clamp(0.01, 1.0);
@@ -28,12 +45,21 @@ pub fn ring_progress_svg(icon_key: &str, progress: f32, color_hex: &str) -> Stri
 
     let inner_paths = match icon_key {
         "droplet" | "water" => r#"<path d="M6.8 11a6 6 0 1 0 10.396 0l-5.196 -8l-5.2 8z" /><path d="M6 14a6 6 0 0 0 6 6" />"#,
-        "walk" | "activity" => r#"<path d="M13 4a1 1 0 1 0 2 0a1 1 0 0 0 -2 0" /><path d="M7 21l3 -4" /><path d="M16 21l-2 -4l-3 -3l1 -6" /><path d="M6 12l2 -3l4 -1l3 3l3 1" />"#,
-        "toilet" | "poop" => r#"<path d="M10 12h4v7a3 3 0 0 1 -3 3h-2a3 3 0 0 1 -3 -3v-7h4z" /><path d="M6 4h12a1 1 0 0 1 1 1v3a1 1 0 0 1 -1 1h-12a1 1 0 0 1 -1 -1v-3a1 1 0 0 1 1 -1z" />"#,
-        "eye" => r#"<path d="M10 12a2 2 0 1 0 4 0a2 2 0 0 0 -4 0" /><path d="M21 12c-2.4 4 -5.4 6 -9 6c-3.6 0 -6.6 -2 -9 -6c2.4 -4 5.4 -6 9 -6c3.6 0 6.6 2 9 6" />"#,
-        "pill" => r#"<path d="M4.5 12.5l8 -8a4.95 4.95 0 0 1 7 7l-8 8a4.95 4.95 0 0 1 -7 -7" /><path d="M8.5 8.5l7 7" />"#,
-        "bell" | "alarm" => r#"<path d="M10 5a2 2 0 0 1 4 0a7 7 0 0 1 4 6v3a4 4 0 0 0 2 3h-16a4 4 0 0 0 2 -3v-3a7 7 0 0 1 4 -6" /><path d="M9 17v1a3 3 0 0 0 6 0v-1" />"#,
+        "coffee" | "tea" => r#"<path d="M3 14c0 2.76 2.24 5 5 5h4c2.76 0 5 -2.24 5 -5v-3H3v3z" /><path d="M17 9h1a3 3 0 0 1 3 3v1a3 3 0 0 1 -3 3h-1" /><path d="M6 2v2" /><path d="M10 2v2" /><path d="M14 2v2" />"#,
+        "walk" | "step" => r#"<path d="M13 4a1 1 0 1 0 2 0a1 1 0 0 0 -2 0" /><path d="M7 21l3 -4" /><path d="M16 21l-2 -4l-3 -3l1 -6" /><path d="M6 12l2 -3l4 -1l3 3l3 1" />"#,
+        "activity" | "stretch" => r#"<path d="M3 12h4l3 8l4 -16l3 8h4" />"#,
+        "eye" | "vision" => r#"<path d="M10 12a2 2 0 1 0 4 0a2 2 0 0 0 -4 0" /><path d="M21 12c-2.4 4 -5.4 6 -9 6c-3.6 0 -6.6 -2 -9 -6c2.4 -4 5.4 -6 9 -6c3.6 0 6.6 2 9 6" />"#,
+        "pill" | "medicine" => r#"<path d="M4.5 12.5l8 -8a4.95 4.95 0 0 1 7 7l-8 8a4.95 4.95 0 0 1 -7 -7" /><path d="M8.5 8.5l7 7" />"#,
+        "heart" | "breathe" => r#"<path d="M19.5 12.572l-7.5 7.428l-7.5 -7.428a5 5 0 1 1 7.5 -6.566a5 5 0 1 1 7.5 6.572" />"#,
+        "sun" | "light" => r#"<path d="M12 12m-4 0a4 4 0 1 0 8 0a4 4 0 1 0 -8 0" /><path d="M3 12h1m8 -9v1m8 8h1m-9 8v1m-6.4 -15.4l.7 .7m12.1 -.7l-.7 .7m0 11.4l.7 .7m-12.1 -.7l-.7 .7" />"#,
         "clock" | "focus" => r#"<path d="M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0 -18 0" /><path d="M12 7v5l3 3" />"#,
+        "book" | "read" => r#"<path d="M3 19a9 9 0 0 1 9 0a9 9 0 0 1 9 0" /><path d="M3 6a9 9 0 0 1 9 0a9 9 0 0 1 9 0" /><path d="M3 6l0 13" /><path d="M12 6l0 13" /><path d="M21 6l0 13" />"#,
+        "laptop" | "work" => r#"<path d="M3 19l18 0" /><path d="M5 6m0 1a1 1 0 0 1 1 -1h12a1 1 0 0 1 1 1v8a1 1 0 0 1 -1 1h-12a1 1 0 0 1 -1 -1z" />"#,
+        "target" | "goal" => r#"<path d="M12 12m-1 0a1 1 0 1 0 2 0a1 1 0 1 0 -2 0" /><path d="M12 12m-5 0a5 5 0 1 0 10 0a5 5 0 1 0 -10 0" /><path d="M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0 -18 0" />"#,
+        "moon" | "sleep" | "rest" => r#"<path d="M12 3c.132 0 .263 0 .393 0a7.5 7.5 0 0 0 7.92 12.446a9 9 0 1 1 -8.313 -12.454z" />"#,
+        "apple" | "fruit" | "food" => r#"<path d="M12 14m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0" /><path d="M12 7a3 3 0 0 1 3 -3" /><path d="M12 10v4" />"#,
+        "toilet" | "poop" => r#"<path d="M10 12h4v7a3 3 0 0 1 -3 3h-2a3 3 0 0 1 -3 -3v-7h4z" /><path d="M6 4h12a1 1 0 0 1 1 1v3a1 1 0 0 1 -1 1h-12a1 1 0 0 1 -1 -1v-3a1 1 0 0 1 1 -1z" /><path d="M10 9v3" /><path d="M14 9v3" />"#,
+        "bell" | "alarm" => r#"<path d="M10 5a2 2 0 0 1 4 0a7 7 0 0 1 4 6v3a4 4 0 0 0 2 3h-16a4 4 0 0 0 2 -3v-3a7 7 0 0 1 4 -6" /><path d="M9 17v1a3 3 0 0 0 6 0v-1" />"#,
         _ => r#"<path d="M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0 -18 0" /><path d="M12 7v5l3 3" />"#,
     };
 
@@ -42,36 +68,63 @@ pub fn ring_progress_svg(icon_key: &str, progress: f32, color_hex: &str) -> Stri
     )
 }
 
-// ==================== 业务提醒图标 ====================
+// ==================== 16 种丰富业务提醒矢量图标 ====================
 
-/// 水滴（喝水）
+/// 水滴（喝水 / 补水）
 pub const ICON_DROPLET: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6.8 11a6 6 0 1 0 10.396 0l-5.196 -8l-5.2 8z" /><path d="M6 14a6 6 0 0 0 6 6" /></svg>"#;
 
-/// 走动小人（起身活动）
+/// 咖啡杯（咖啡 / 茶饮）
+pub const ICON_COFFEE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 14c0 2.76 2.24 5 5 5h4c2.76 0 5 -2.24 5 -5v-3H3v3z" /><path d="M17 9h1a3 3 0 0 1 3 3v1a3 3 0 0 1 -3 3h-1" /><path d="M6 2v2" /><path d="M10 2v2" /><path d="M14 2v2" /></svg>"#;
+
+/// 走动小人（起身活动 / 散步）
 pub const ICON_WALK: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 4a1 1 0 1 0 2 0a1 1 0 0 0 -2 0" /><path d="M7 21l3 -4" /><path d="M16 21l-2 -4l-3 -3l1 -6" /><path d="M6 12l2 -3l4 -1l3 3l3 1" /></svg>"#;
 
-/// 卫生间 / 便便马桶（规律排便）
-pub const ICON_TOILET: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 12h4v7a3 3 0 0 1 -3 3h-2a3 3 0 0 1 -3 -3v-7h4z" /><path d="M6 4h12a1 1 0 0 1 1 1v3a1 1 0 0 1 -1 1h-12a1 1 0 0 1 -1 -1v-3a1 1 0 0 1 1 -1z" /><path d="M10 9v3" /><path d="M14 9v3" /></svg>"#;
+/// 脉冲波形（拉伸运动 / 健身活动）
+pub const ICON_ACTIVITY: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3 8l4 -16l3 8h4" /></svg>"#;
 
 /// 眼睛（护眼远眺）
 pub const ICON_EYE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 12a2 2 0 1 0 4 0a2 2 0 0 0 -4 0" /><path d="M21 12c-2.4 4 -5.4 6 -9 6c-3.6 0 -6.6 -2 -9 -6c2.4 -4 5.4 -6 9 -6c3.6 0 6.6 2 9 6" /></svg>"#;
 
-/// 药丸（服药补充）
+/// 药丸（服药补充 / 维生素）
 pub const ICON_PILL: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 12.5l8 -8a4.95 4.95 0 0 1 7 7l-8 8a4.95 4.95 0 0 1 -7 -7" /><path d="M8.5 8.5l7 7" /></svg>"#;
 
-/// 铃铛 / 提醒（Bell）
+/// 爱心（深呼吸 / 冥想静心 / 心率）
+pub const ICON_HEART: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19.5 12.572l-7.5 7.428l-7.5 -7.428a5 5 0 1 1 7.5 -6.566a5 5 0 1 1 7.5 6.572" /></svg>"#;
+
+/// 太阳（晒太阳 / 户外通风）
+pub const ICON_SUN: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 12m-4 0a4 4 0 1 0 8 0a4 4 0 1 0 -8 0" /><path d="M3 12h1m8 -9v1m8 8h1m-9 8v1m-6.4 -15.4l.7 .7m12.1 -.7l-.7 .7m0 11.4l.7 .7m-12.1 -.7l-.7 .7" /></svg>"#;
+
+/// 时钟（番茄专注 / 工作定时）
+pub const ICON_CLOCK: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0 -18 0" /><path d="M12 7v5l3 3" /></svg>"#;
+
+/// 书本（阅读学习 / 知识积累）
+pub const ICON_BOOK: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 19a9 9 0 0 1 9 0a9 9 0 0 1 9 0" /><path d="M3 6a9 9 0 0 1 9 0a9 9 0 0 1 9 0" /><path d="M3 6l0 13" /><path d="M12 6l0 13" /><path d="M21 6l0 13" /></svg>"#;
+
+/// 笔记本电脑（久坐提示 / 工作整理）
+pub const ICON_LAPTOP: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 19l18 0" /><path d="M5 6m0 1a1 1 0 0 1 1 -1h12a1 1 0 0 1 1 1v8a1 1 0 0 1 -1 1h-12a1 1 0 0 1 -1 -1z" /></svg>"#;
+
+/// 靶心目标（阶段打卡 / 目标达成）
+pub const ICON_TARGET: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 12m-1 0a1 1 0 1 0 2 0a1 1 0 1 0 -2 0" /><path d="M12 12m-5 0a5 5 0 1 0 10 0a5 5 0 1 0 -10 0" /><path d="M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0 -18 0" /></svg>"#;
+
+/// 月亮（小憩休息 / 准时就寝）
+pub const ICON_MOON: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3c.132 0 .263 0 .393 0a7.5 7.5 0 0 0 7.92 12.446a9 9 0 1 1 -8.313 -12.454z" /></svg>"#;
+
+/// 苹果（水果加餐 / 健康轻食）
+pub const ICON_APPLE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 14m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0" /><path d="M12 7a3 3 0 0 1 3 -3" /><path d="M12 10v4" /></svg>"#;
+
+/// 卫生间 / 便便马桶（规律排便 / 带薪拉屎）
+pub const ICON_TOILET: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 12h4v7a3 3 0 0 1 -3 3h-2a3 3 0 0 1 -3 -3v-7h4z" /><path d="M6 4h12a1 1 0 0 1 1 1v3a1 1 0 0 1 -1 1h-12a1 1 0 0 1 -1 -1v-3a1 1 0 0 1 1 -1z" /><path d="M10 9v3" /><path d="M14 9v3" /></svg>"#;
+
+/// 铃铛 / 提醒（通用提醒 / 闹钟）
 pub const ICON_BELL: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 5a2 2 0 0 1 4 0a7 7 0 0 1 4 6v3a4 4 0 0 0 2 3h-16a4 4 0 0 0 2 -3v-3a7 7 0 0 1 4 -6" /><path d="M9 17v1a3 3 0 0 0 6 0v-1" /></svg>"#;
 
-/// 时钟 / 专注（Clock）
-pub const ICON_CLOCK: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0 -18 0" /><path d="M12 7v5l3 3" /></svg>"#;
+// ==================== 操作界面图标 ====================
 
 /// 垃圾桶 / 删除（Trash）
 pub const ICON_TRASH: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7l16 0" /><path d="M10 11l0 6" /><path d="M14 11l0 6" /><path d="M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2 -2l1 -12" /><path d="M9 7v-3a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v3" /></svg>"#;
 
-/// 警示 / 到期（Alert）纯矢量图标，杜绝 Emoji
+/// 警示 / 到期（Alert）纯矢量图标
 pub const ICON_ALERT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4" /><path d="M12 17h.01" /><path d="M5 19h14a2 2 0 0 0 1.84 -2.75l-7.1 -12.25a2 2 0 0 0 -3.5 0l-7.1 12.25a2 2 0 0 0 1.75 2.75" /></svg>"#;
-
-// ==================== 操作界面图标 ====================
 
 /// 打卡完成对勾（Check）
 pub const ICON_CHECK: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5l10 -10" /></svg>"#;
@@ -94,33 +147,81 @@ pub const ICON_SETTINGS: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewB
 /// 窗口透明度（Opacity）
 pub const ICON_OPACITY: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0 -18 0" /><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" /></svg>"#;
 
-/// 下拉指示箭头（Chevron Down）
+/// 折叠收起指示箭头（Chevron Up）
+pub const ICON_CHEVRON_UP: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 15l6 -6l6 6" /></svg>"#;
+
+/// 展开指示箭头（Chevron Down）
 pub const ICON_CHEVRON_DOWN: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6l6 -6" /></svg>"#;
+
+/// 自定义配置 / 铅笔编辑（Edit / Custom）
+pub const ICON_EDIT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4l10.5 -10.5a2.828 2.828 0 1 0 -4 -4l-10.5 10.5v4" /><path d="M13.5 6.5l4 4" /></svg>"#;
+
 
 /// 根据标识获取对应 SVG
 pub fn get_icon_markup(icon_key: &str) -> &'static str {
     match icon_key {
         "droplet" | "water" => ICON_DROPLET,
-        "walk" | "activity" => ICON_WALK,
-        "toilet" | "poop" => ICON_TOILET,
-        "eye" => ICON_EYE,
-        "pill" => ICON_PILL,
-        "bell" | "alarm" => ICON_BELL,
+        "coffee" | "tea" => ICON_COFFEE,
+        "walk" | "step" => ICON_WALK,
+        "activity" | "stretch" => ICON_ACTIVITY,
+        "eye" | "vision" => ICON_EYE,
+        "pill" | "medicine" => ICON_PILL,
+        "heart" | "breathe" => ICON_HEART,
+        "sun" | "light" => ICON_SUN,
         "clock" | "focus" => ICON_CLOCK,
+        "book" | "read" => ICON_BOOK,
+        "laptop" | "work" => ICON_LAPTOP,
+        "target" | "goal" => ICON_TARGET,
+        "moon" | "sleep" | "rest" => ICON_MOON,
+        "apple" | "fruit" | "food" => ICON_APPLE,
+        "toilet" | "poop" => ICON_TOILET,
+        "bell" | "alarm" => ICON_BELL,
         _ => ICON_BELL,
     }
 }
 
-/// 获取条目的主题高光色
+/// 获取条目的主题高光色（用于环形进度 SVG 的 hex 字符串）
 pub fn get_item_color(icon_key: &str) -> &'static str {
     match icon_key {
-        "droplet" | "water" => "#38bdf8",  // 天空发光蓝（喝水）
-        "walk" | "activity" => "#34d399",  // 清新薄荷绿（活动）
-        "toilet" | "poop" => "#fbbf24",    // 暖金琥珀色（带薪拉屎）
-        "eye" => "#818cf8",                // 优雅紫罗兰（护眼）
-        "pill" => "#f472b6",               // 珊瑚粉红（服药）
-        "bell" | "alarm" => "#eab308",      // 醒目金黄（通用提醒）
-        "clock" | "focus" => "#a78bfa",    // 专注柔紫（番茄时钟）
+        "droplet" | "water" => "#38bdf8",         // 天空发光蓝（喝水）
+        "coffee" | "tea" => "#f59e0b",            // 温暖琥珀黄（咖啡茶饮）
+        "walk" | "step" => "#34d399",             // 清新薄荷绿（起身活动）
+        "activity" | "stretch" => "#a3e635",      // 活力青柠绿（拉伸健身）
+        "eye" | "vision" => "#818cf8",            // 优雅紫罗兰（护眼远眺）
+        "pill" | "medicine" => "#f472b6",         // 珊瑚粉红（服药补充）
+        "heart" | "breathe" => "#fb7185",         // 玫瑰绯红（深呼吸/静心）
+        "sun" | "light" => "#fb923c",             // 暖阳橙黄（晒太阳/通风）
+        "clock" | "focus" => "#a78bfa",           // 专注柔紫（番茄时钟）
+        "book" | "read" => "#22d3ee",             // 清爽青蓝（阅读学习）
+        "laptop" | "work" => "#60a5fa",           // 科技明蓝（办公整理）
+        "target" | "goal" => "#f87171",           // 焦点赤红（目标达成）
+        "moon" | "sleep" | "rest" => "#c084fc",   // 静谧夜紫（小憩休息）
+        "apple" | "fruit" | "food" => "#4ade80",  // 健康嫩绿（健康轻食）
+        "toilet" | "poop" => "#fbbf24",           // 暖金琥珀（带薪拉屎）
+        "bell" | "alarm" => "#eab308",            // 醒目金黄（通用提醒）
         _ => "#38bdf8",
+    }
+}
+
+/// 获取条目的主题高光色（Hsla 响应式色彩）
+pub fn get_item_hsla(icon_key: &str) -> Hsla {
+    match icon_key {
+        "droplet" | "water" => hsl(199.0, 95.0, 60.0),
+        "coffee" | "tea" => hsl(38.0, 92.0, 50.0),
+        "walk" | "step" => hsl(160.0, 84.0, 52.0),
+        "activity" | "stretch" => hsl(84.0, 81.0, 55.0),
+        "eye" | "vision" => hsl(239.0, 84.0, 67.0),
+        "pill" | "medicine" => hsl(330.0, 81.0, 71.0),
+        "heart" | "breathe" => hsl(351.0, 95.0, 71.0),
+        "sun" | "light" => hsl(25.0, 95.0, 61.0),
+        "clock" | "focus" => hsl(255.0, 92.0, 76.0),
+        "book" | "read" => hsl(189.0, 85.0, 53.0),
+        "laptop" | "work" => hsl(217.0, 91.0, 68.0),
+        "target" | "goal" => hsl(0.0, 91.0, 71.0),
+        "moon" | "sleep" | "rest" => hsl(271.0, 91.0, 75.0),
+        "apple" | "fruit" | "food" => hsl(142.0, 71.0, 58.0),
+        "toilet" | "poop" => hsl(43.0, 96.0, 56.0),
+        "bell" | "alarm" => hsl(48.0, 96.0, 48.0),
+        _ => hsl(48.0, 96.0, 48.0),
     }
 }
