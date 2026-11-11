@@ -100,7 +100,7 @@ fn setup_floating_window() {
                     let alpha = ((percent as f32 / 100.0) * 255.0).round() as u8;
                     let _ = SetLayeredWindowAttributes(target_hwnd, COLORREF(0), alpha, LWA_ALPHA);
 
-                    // 3. 启用 Win11 原生硬件级平滑圆角 (DWMWCP_ROUND = 2)
+                    // 3. 启用 Win11 原生硬件级平滑圆角与投影 (DWMWCP_ROUND = 2)
                     let round_pref: u32 = 2;
                     let _ = DwmSetWindowAttribute(
                         target_hwnd,
@@ -109,11 +109,7 @@ fn setup_floating_window() {
                         std::mem::size_of_val(&round_pref) as u32,
                     );
 
-                    // 4. 启用系统原生精致阴影 (CS_DROPSHADOW)
-                    let class_style = GetClassLongPtrW(target_hwnd, GCL_STYLE);
-                    SetClassLongPtrW(target_hwnd, GCL_STYLE, (class_style | CS_DROPSHADOW.0 as usize) as isize);
-
-                    // 5. 刷新非客户区，不改变位置、不改变尺寸、不改变Z序、不抢焦点
+                    // 4. 刷新非客户区，不改变位置、不改变尺寸、不改变Z序、不抢焦点
                     let _ = SetWindowPos(
                         target_hwnd,
                         None,
@@ -132,34 +128,7 @@ fn setup_floating_window() {
 
 /// 统一窗口尺寸规范（逻辑像素，自动由 NSH 处理 High-DPI 缩放，杜绝模糊与尺寸割裂）
 pub const WINDOW_WIDTH: f32 = 320.0;
-pub const BASE_CONTENT_HEIGHT: f32 = 102.0; // padding (28) + header (30) + footer (22) + gaps (22)
-pub const ITEM_ROW_HEIGHT: f32 = 46.0;
-pub const DRAWER_BASE_HEIGHT: f32 = 126.0;
-pub const DRAWER_PRESETS_HEIGHT: f32 = 112.0;
-pub const DRAWER_CUSTOM_HEIGHT: f32 = 208.0;
-
-/// 根据提醒项目数量、设置抽屉展开状态、常用推荐展开状态以及自定义表单展开状态精确计算窗口高度
-pub fn calculate_window_height(
-    item_count: usize,
-    is_drawer_open: bool,
-    is_presets_open: bool,
-    is_custom_open: bool,
-) -> f32 {
-    let items_h = item_count as f32 * ITEM_ROW_HEIGHT;
-    let drawer_h = if is_drawer_open {
-        let mut h = DRAWER_BASE_HEIGHT;
-        if is_presets_open {
-            h += DRAWER_PRESETS_HEIGHT;
-        }
-        if is_custom_open {
-            h += DRAWER_CUSTOM_HEIGHT;
-        }
-        h
-    } else {
-        0.0
-    };
-    (BASE_CONTENT_HEIGHT + items_h + drawer_h).clamp(195.0, 720.0)
-}
+pub const WINDOW_HEIGHT: f32 = 350.0;
 
 /// 触发倒计时到期提醒（声音、系统原生通知、窗口置顶唤起）
 pub fn trigger_reminder_alarm(item_name: &str) {
@@ -222,10 +191,17 @@ pub fn App() -> impl IntoElement {
     // 2. 窗口原生桌面属性：置顶悬浮 (Floating)
     desktop::set_level(WindowLevel::Floating);
 
-    // 3. 强制暗色模式：底层清屏彻底变为深黑色，杜绝任何浅色主题底色透出
+    // 3. 统一标准精致挂件尺寸：启动时一次性初始化，全程锁定尺寸不变，彻底杜绝原生窗口 Resize 引起的任何硬件重影与闪烁
+    desktop::set_frame(WindowFrame {
+        width: Some(px(WINDOW_WIDTH)),
+        height: Some(px(WINDOW_HEIGHT)),
+        ..Default::default()
+    });
+
+    // 4. 强制暗色模式：底层清屏彻底变为深黑色，杜绝任何浅色主题底色透出
     nsh_core::element::set_color_scheme(nsh_core::platform::Appearance::Dark);
 
-    // 4. 状态管理：默认预置通用基础提醒（喝水 30min、活动 45min、带薪拉屎 90min）
+    // 5. 状态管理：默认预置通用基础提醒（喝水 30min、活动 45min、带薪拉屎 90min）
     let items = signal(vec![
         ReminderItem::new("喝水", "droplet", 30 * 60),
         ReminderItem::new("起身活动", "walk", 45 * 60),
@@ -245,24 +221,9 @@ pub fn App() -> impl IntoElement {
         apply_window_opacity(val);
     });
 
-    // 窗口高度动态自适应：点击设置抽屉或增减提醒项时动态调节高度，并支持平滑滚动，杜绝遮挡
-    effect(move || {
-        let is_open = show_settings.get();
-        let is_presets = show_presets.get();
-        let is_custom = show_custom_form.get();
-        let count = items.get().len();
-        let target_h = calculate_window_height(count, is_open, is_presets, is_custom);
-
-        desktop::set_frame(WindowFrame {
-            width: Some(px(WINDOW_WIDTH)),
-            height: Some(px(target_h)),
-            ..Default::default()
-        });
-    });
-
     // 每秒驱动倒计时更新与到期提醒
-    let timer = stored(None::<Spawned<()>>);
-    timer.replace(Some(set_interval(Duration::from_secs(1), move || {
+    let tick_timer = stored(None::<Spawned<()>>);
+    tick_timer.replace(Some(set_interval(Duration::from_secs(1), move || {
         if !is_all_paused.get() {
             let mut newly_expired = Vec::new();
             items.update(|list| {
@@ -289,14 +250,29 @@ pub fn App() -> impl IntoElement {
         .bg(card_bg)
         .p(px(14.0))
         .flex_col()
-        .gap(px(8.0))
+        .justify_between()
         // 1. 顶栏：通用「reminder 提醒」金黄微标与标题，右侧挂件操作按钮组（暂停、设置、关闭）
         .child(render_header(items, is_all_paused, show_settings))
-        // 2. 新建/设置抽屉（点击顶部设置/新建时平滑展开，窗口自动变大，支持不透明度调节与快捷提醒添加）
-        .child(render_drawer(show_settings, show_presets, show_custom_form, items, opacity))
-        // 3. 核心提醒列表（基于 each 响应式驱动更新与增减）
-        .child(render_items(items))
-        // 4. 底部状态行（通用统计：「进行中 X 项 · 今日打卡 Y 次」，若处于半透明状态则额外指示不透明度）
+        // 2. 核心内容滚动区：抽屉展开与列表统一容纳，高了自行平滑滚动，大窗口全程稳定
+        .child(
+            scroll()
+                .window_drag(true)
+                .w_full()
+                .flex_1()
+                .my(px(4.0))
+                .scrollbar(false)
+                .child(
+                    view()
+                        .w_full()
+                        .flex_col()
+                        .gap(px(6.0))
+                        // 新建/设置抽屉（点击齿轮平滑展开/折叠，纯 GPU 矢量物理弹簧动画）
+                        .child(render_drawer(show_settings, show_presets, show_custom_form, items, opacity))
+                        // 核心提醒列表
+                        .child(render_items(items)),
+                ),
+        )
+        // 3. 底部状态行（通用统计：「进行中 X 项 · 今日打卡 Y 次」，若处于半透明状态则额外指示不透明度）
         .child(render_footer(items, opacity))
 }
 
@@ -306,6 +282,8 @@ fn render_header(
     is_all_paused: Signal<bool>,
     show_settings: Signal<bool>,
 ) -> impl IntoElement {
+    let count_text = computed(move || items.with(|list| format!("{} 项", list.len())));
+
     view()
         .window_drag(true)
         .flex_row()
@@ -344,7 +322,7 @@ fn render_header(
                         .rounded(px(10.0))
                         .bg(white().alpha(0.08))
                         .child(
-                            text(move || format!("{} 项", items.get().len()))
+                            text(move || count_text.get())
                                 .text_size(px(10.5))
                                 .text_color(white().alpha(0.60)),
                         ),
@@ -407,7 +385,7 @@ fn render_header(
                         .justify_center()
                         .bg(white().alpha(0.04))
                         .active(|s| s.opacity(0.5))
-                        .on_press(move || desktop::close_window())
+                        .on_press(desktop::close_window)
                         .child(
                             icons::icon_svg(icons::ICON_X, 11.0, white().alpha(0.65)),
                         ),
@@ -415,24 +393,18 @@ fn render_header(
         )
 }
 
-/// 核心列表：包裹在 scroll 容器中，使用 each 原语基于 key 响应式高效追踪每个 item 的变化
+/// 核心列表：基于 each 原语基于 key 响应式高效追踪每个 item 的变化
 fn render_items(items: Signal<Vec<ReminderItem>>) -> impl IntoElement {
-    scroll()
+    view()
         .window_drag(true)
         .w_full()
-        .flex_1()
-        .scrollbar(false)
-        .child(
-            view()
-                .w_full()
-                .flex_col()
-                .gap(px(6.0))
-                .child(each(
-                    items,
-                    |item| item.id,
-                    move |item_sig, _| render_item_row(item_sig, items),
-                )),
-        )
+        .flex_col()
+        .gap(px(6.0))
+        .child(each(
+            items,
+            |item| item.id,
+            move |item_sig, _| render_item_row(item_sig, items),
+        ))
 }
 
 /// 单个提醒行：左侧发光进度图标 + 中间名称倒计时 + 完成次数 + 右侧 [✓] [+5] [🗑]
@@ -664,6 +636,14 @@ fn render_item_row(
 
 /// 底部统计行：细线分隔 + 灰白小字通用统计 + 半透明时指示不透明度状态
 fn render_footer(items: Signal<Vec<ReminderItem>>, opacity: Signal<f32>) -> impl IntoElement {
+    let summary_text = computed(move || {
+        items.with(|list| {
+            let total_completed: u32 = list.iter().map(|i| i.completed_count).sum();
+            let count = list.len();
+            format!("进行中 {} 项 · 今日打卡 {} 次", count, total_completed)
+        })
+    });
+
     view()
         .window_drag(true)
         .flex_row()
@@ -673,14 +653,9 @@ fn render_footer(items: Signal<Vec<ReminderItem>>, opacity: Signal<f32>) -> impl
         .border_t_1()
         .border_color(white().alpha(0.06))
         .child(
-            text(move || {
-                let list = items.get();
-                let total_completed: u32 = list.iter().map(|i| i.completed_count).sum();
-                let count = list.len();
-                format!("进行中 {} 项 · 今日打卡 {} 次", count, total_completed)
-            })
-            .text_size(px(11.0))
-            .text_color(white().alpha(0.45)),
+            text(move || summary_text.get())
+                .text_size(px(11.0))
+                .text_color(white().alpha(0.45)),
         )
         .child(
             when(
@@ -703,14 +678,15 @@ fn render_preset_card(
     let icon = preset.icon_key;
     let mins = preset.minutes;
 
+    let is_running = computed(move || items.with(|list| list.iter().any(|x| x.name == name)));
+
     view()
         .flex_1()
         .px(px(7.0))
         .py(px(5.0))
         .rounded(px(5.0))
         .bg(move || {
-            let running = items.get().iter().any(|x| x.name == name);
-            if running {
+            if is_running.get() {
                 hsl(145.0, 50.0, 20.0).alpha(0.35)
             } else {
                 white().alpha(0.04)
@@ -718,8 +694,7 @@ fn render_preset_card(
         })
         .border_1()
         .border_color(move || {
-            let running = items.get().iter().any(|x| x.name == name);
-            if running {
+            if is_running.get() {
                 hsl(145.0, 60.0, 45.0).alpha(0.40)
             } else {
                 white().alpha(0.07)
@@ -727,8 +702,7 @@ fn render_preset_card(
         })
         .active(|s| s.opacity(0.6))
         .on_press(move || {
-            let running = items.get().iter().any(|x| x.name == name);
-            if !running {
+            if !is_running.get() {
                 items.update(|list| {
                     list.push(ReminderItem::new(
                         name,
@@ -758,8 +732,7 @@ fn render_preset_card(
                     text(name)
                         .text_size(px(10.5))
                         .text_color(move || {
-                            let running = items.get().iter().any(|x| x.name == name);
-                            if running {
+                            if is_running.get() {
                                 hsl(145.0, 75.0, 75.0)
                             } else {
                                 white().alpha(0.85)
@@ -774,8 +747,7 @@ fn render_preset_card(
                 .py(px(1.0))
                 .rounded(px(3.0))
                 .bg(move || {
-                    let running = items.get().iter().any(|x| x.name == name);
-                    if running {
+                    if is_running.get() {
                         hsl(145.0, 60.0, 30.0).alpha(0.35)
                     } else {
                         white().alpha(0.06)
@@ -785,8 +757,7 @@ fn render_preset_card(
                     text(format!("{}m", mins))
                         .text_size(px(9.5))
                         .text_color(move || {
-                            let running = items.get().iter().any(|x| x.name == name);
-                            if running {
+                            if is_running.get() {
                                 hsl(145.0, 70.0, 70.0)
                             } else {
                                 white().alpha(0.40)
@@ -809,9 +780,10 @@ fn render_drawer(
     let custom_icon = signal("bell".to_string());
     let error_tip = signal(Option::<String>::None);
 
-    when(
-        move || show.get(),
-        move || {
+    collapsible()
+        .open(show)
+        .reveal(true)
+        .content(
             view()
                 .window_drag(false)
                 .p(px(8.0))
@@ -1437,7 +1409,7 @@ fn render_drawer(
                                                         error_tip.set(Some("时长上限为 1440 分钟 (24小时)".to_string()));
                                                         return;
                                                     }
-                                                    if items.get().iter().any(|x| x.name == name) {
+                                                    if items.with(|list| list.iter().any(|x| x.name == name)) {
                                                         error_tip.set(Some("该提醒已在列表中".to_string()));
                                                         return;
                                                     }
@@ -1460,49 +1432,13 @@ fn render_drawer(
                                         ),
                                 ),
                         ),
-                )
-        },
-    )
+                ),
+        )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_window_height_calculation() {
-        // 0 项且未展开抽屉
-        let h0 = calculate_window_height(0, false, false, false);
-        assert_eq!(h0, 195.0); // 102.0 clamp 最小 195.0
-
-        // 3 项未展开抽屉
-        let h3 = calculate_window_height(3, false, false, false);
-        assert_eq!(h3, BASE_CONTENT_HEIGHT + 3.0 * ITEM_ROW_HEIGHT);
-
-        // 3 项展开基础抽屉（未展开常用推荐与自定义表单）
-        let h3_drawer = calculate_window_height(3, true, false, false);
-        assert_eq!(h3_drawer, BASE_CONTENT_HEIGHT + 3.0 * ITEM_ROW_HEIGHT + DRAWER_BASE_HEIGHT);
-        assert!(h3_drawer > h3);
-
-        // 3 项展开抽屉且展开常用推荐（未展开自定义表单）
-        let h3_presets = calculate_window_height(3, true, true, false);
-        assert_eq!(h3_presets, BASE_CONTENT_HEIGHT + 3.0 * ITEM_ROW_HEIGHT + DRAWER_BASE_HEIGHT + DRAWER_PRESETS_HEIGHT);
-        assert!(h3_presets > h3_drawer);
-
-        // 3 项展开抽屉且展开自定义表单（未展开常用推荐）
-        let h3_custom = calculate_window_height(3, true, false, true);
-        assert_eq!(h3_custom, BASE_CONTENT_HEIGHT + 3.0 * ITEM_ROW_HEIGHT + DRAWER_BASE_HEIGHT + DRAWER_CUSTOM_HEIGHT);
-        assert!(h3_custom > h3_presets);
-
-        // 3 项展开抽屉且两者均展开
-        let h3_both = calculate_window_height(3, true, true, true);
-        assert_eq!(h3_both, BASE_CONTENT_HEIGHT + 3.0 * ITEM_ROW_HEIGHT + DRAWER_BASE_HEIGHT + DRAWER_PRESETS_HEIGHT + DRAWER_CUSTOM_HEIGHT);
-        assert!(h3_both > h3_custom);
-
-        // 超多项 clamp 最大值 720.0
-        let h_many = calculate_window_height(20, true, true, true);
-        assert_eq!(h_many, 720.0);
-    }
 
     #[test]
     fn test_opacity_clamp_range() {

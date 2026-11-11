@@ -20,7 +20,7 @@ fn main() -> impl std::process::Termination {
             appearance: platform::Appearance::Dark,
             #[cfg(any(target_os = "linux", target_os = "windows"))]
             app_id: "com.reminder.app".to_owned(),
-            size: (320, 240),
+            size: (nsh_app_reminder::WINDOW_WIDTH as i32, nsh_app_reminder::WINDOW_HEIGHT as i32),
             ..Default::default()
         },
     )
