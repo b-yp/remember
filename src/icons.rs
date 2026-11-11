@@ -38,6 +38,7 @@ where
 }
 
 /// 生成带有彩色圆环进度条和居中矢量图标的完整 SVG markup
+/// 外层背景环轨采用 stroke="currentColor" stroke-opacity="0.12"，原生自适应任何明暗主题
 pub fn ring_progress_svg(icon_key: &str, progress: f32, color_hex: &str) -> String {
     let circumference = 87.964_f32; // 2 * PI * 14
     let progress = progress.clamp(0.01, 1.0);
@@ -64,7 +65,7 @@ pub fn ring_progress_svg(icon_key: &str, progress: f32, color_hex: &str) -> Stri
     };
 
     format!(
-        r#"<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 36 36"><circle cx="18" cy="18" r="14" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="2.5" /><circle cx="18" cy="18" r="14" fill="none" stroke="{color_hex}" stroke-width="2.5" stroke-dasharray="{circumference:.2}" stroke-dashoffset="{offset:.2}" stroke-linecap="round" transform="rotate(-90 18 18)" /><g transform="translate(10, 10) scale(0.666)" stroke="{color_hex}" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">{inner_paths}</g></svg>"#
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 36 36"><circle cx="18" cy="18" r="14" fill="none" stroke="currentColor" stroke-opacity="0.12" stroke-width="2.5" /><circle cx="18" cy="18" r="14" fill="none" stroke="{color_hex}" stroke-width="2.5" stroke-dasharray="{circumference:.2}" stroke-dashoffset="{offset:.2}" stroke-linecap="round" transform="rotate(-90 18 18)" /><g transform="translate(10, 10) scale(0.666)" stroke="{color_hex}" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">{inner_paths}</g></svg>"#
     )
 }
 
@@ -187,47 +188,64 @@ pub fn get_icon_markup(icon_key: &str) -> &'static str {
 /// 获取条目的主题高光色（用于环形进度 SVG 的 hex 字符串）
 pub fn get_item_color(icon_key: &str) -> &'static str {
     match icon_key {
-        "droplet" | "water" => "#38bdf8",         // 天空发光蓝（喝水）
-        "coffee" | "tea" => "#f59e0b",            // 温暖琥珀黄（咖啡茶饮）
-        "walk" | "step" => "#34d399",             // 清新薄荷绿（起身活动）
-        "activity" | "stretch" => "#a3e635",      // 活力青柠绿（拉伸健身）
-        "eye" | "vision" => "#818cf8",            // 优雅紫罗兰（护眼远眺）
-        "pill" | "medicine" => "#f472b6",         // 珊瑚粉红（服药补充）
-        "heart" | "breathe" => "#fb7185",         // 玫瑰绯红（深呼吸/静心）
-        "sun" | "light" => "#fb923c",             // 暖阳橙黄（晒太阳/通风）
-        "clock" | "focus" => "#a78bfa",           // 专注柔紫（番茄时钟）
-        "book" | "read" => "#22d3ee",             // 清爽青蓝（阅读学习）
-        "laptop" | "work" => "#60a5fa",           // 科技明蓝（办公整理）
-        "target" | "goal" => "#f87171",           // 焦点赤红（目标达成）
-        "moon" | "sleep" | "rest" => "#c084fc",   // 静谧夜紫（小憩休息）
-        "apple" | "fruit" | "food" => "#4ade80",  // 健康嫩绿（健康轻食）
-        "toilet" | "poop" => "#fbbf24",           // 暖金琥珀（带薪拉屎）
-        "bell" | "alarm" => "#eab308",            // 醒目金黄（通用提醒）
-        "star" | "recommend" => "#f59e0b",        // 璀璨星标（推荐项目）
+        "droplet" | "water" => "#38bdf8",         // 蓝（喝水）
+        "coffee" | "tea" => "#f59e0b",            // 琥珀黄（咖啡）
+        "walk" | "step" => "#34d399",             // 薄荷绿（活动）
+        "activity" | "stretch" => "#a3e635",      // 青柠绿（拉伸）
+        "eye" | "vision" => "#818cf8",            // 紫罗兰（护眼）
+        "pill" | "medicine" => "#f472b6",         // 珊瑚粉（服药）
+        "heart" | "breathe" => "#fb7185",         // 玫瑰红（静心）
+        "sun" | "light" => "#fb923c",             // 暖阳橙（通风）
+        "clock" | "focus" => "#a78bfa",           // 专注紫（番茄）
+        "book" | "read" => "#22d3ee",             // 清爽青（阅读）
+        "laptop" | "work" => "#60a5fa",           // 科技蓝（办公）
+        "target" | "goal" => "#f87171",           // 焦点红（目标）
+        "moon" | "sleep" | "rest" => "#c084fc",   // 夜紫（休息）
+        "apple" | "fruit" | "food" => "#4ade80",  // 嫩绿（轻食）
+        "toilet" | "poop" => "#fbbf24",           // 琥珀（便便）
+        "bell" | "alarm" => "#eab308",            // 金黄（通用）
+        "star" | "recommend" => "#f59e0b",        // 闪耀星标
         _ => "#38bdf8",
     }
 }
 
-/// 获取条目的主题高光色（Hsla 响应式色彩）
-pub fn get_item_hsla(icon_key: &str) -> Hsla {
+/// 获取条目的主题自适应色彩（AdaptiveColor，明暗主题下均保持最佳对比度）
+pub fn get_item_adaptive(icon_key: &str) -> AdaptiveColor {
     match icon_key {
-        "droplet" | "water" => hsl(199.0, 95.0, 60.0),
-        "coffee" | "tea" => hsl(38.0, 92.0, 50.0),
-        "walk" | "step" => hsl(160.0, 84.0, 52.0),
-        "activity" | "stretch" => hsl(84.0, 81.0, 55.0),
-        "eye" | "vision" => hsl(239.0, 84.0, 67.0),
-        "pill" | "medicine" => hsl(330.0, 81.0, 71.0),
-        "heart" | "breathe" => hsl(351.0, 95.0, 71.0),
-        "sun" | "light" => hsl(25.0, 95.0, 61.0),
-        "clock" | "focus" => hsl(255.0, 92.0, 76.0),
-        "book" | "read" => hsl(189.0, 85.0, 53.0),
-        "laptop" | "work" => hsl(217.0, 91.0, 68.0),
-        "target" | "goal" => hsl(0.0, 91.0, 71.0),
-        "moon" | "sleep" | "rest" => hsl(271.0, 91.0, 75.0),
-        "apple" | "fruit" | "food" => hsl(142.0, 71.0, 58.0),
-        "toilet" | "poop" => hsl(43.0, 96.0, 56.0),
-        "bell" | "alarm" => hsl(48.0, 96.0, 48.0),
-        "star" | "recommend" => hsl(45.0, 95.0, 58.0),
-        _ => hsl(48.0, 96.0, 48.0),
+        "droplet" | "water" => AdaptiveColor::rgb(0x0284c7, 0x38bdf8),
+        "coffee" | "tea" => AdaptiveColor::rgb(0xd97706, 0xf59e0b),
+        "walk" | "step" => AdaptiveColor::rgb(0x059669, 0x34d399),
+        "activity" | "stretch" => AdaptiveColor::rgb(0x65a30d, 0xa3e635),
+        "eye" | "vision" => AdaptiveColor::rgb(0x4f46e5, 0x818cf8),
+        "pill" | "medicine" => AdaptiveColor::rgb(0xdb2777, 0xf472b6),
+        "heart" | "breathe" => AdaptiveColor::rgb(0xe11d48, 0xfb7185),
+        "sun" | "light" => AdaptiveColor::rgb(0xea580c, 0xfb923c),
+        "clock" | "focus" => AdaptiveColor::rgb(0x7c3aed, 0xa78bfa),
+        "book" | "read" => AdaptiveColor::rgb(0x0891b2, 0x22d3ee),
+        "laptop" | "work" => AdaptiveColor::rgb(0x2563eb, 0x60a5fa),
+        "target" | "goal" => AdaptiveColor::rgb(0xdc2626, 0xf87171),
+        "moon" | "sleep" | "rest" => AdaptiveColor::rgb(0x9333ea, 0xc084fc),
+        "apple" | "fruit" | "food" => AdaptiveColor::rgb(0x16a34a, 0x4ade80),
+        "toilet" | "poop" => AdaptiveColor::rgb(0xd97706, 0xfbbf24),
+        "bell" | "alarm" => AdaptiveColor::rgb(0xca8a04, 0xeab308),
+        "star" | "recommend" => AdaptiveColor::rgb(0xd97706, 0xf59e0b),
+        _ => AdaptiveColor::rgb(0x0284c7, 0x38bdf8),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ring_progress_svg() {
+        let svg_str = ring_progress_svg("droplet", 0.5, "#38bdf8");
+        assert!(svg_str.contains("stroke=\"currentColor\""));
+        assert!(svg_str.contains("#38bdf8"));
+    }
+
+    #[test]
+    fn test_get_item_color() {
+        assert_eq!(get_item_color("droplet"), "#38bdf8");
     }
 }

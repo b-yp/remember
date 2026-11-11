@@ -1,15 +1,17 @@
 //! The app's Rust UI: reminder 桌面通用健康与生活提醒悬浮挂件
-//! 纯 Rust 编写、固定深色质感、使用 NSH 官方原生 API 隐藏标题栏、支持随意拖拽、矢量环形进度图标
+//! 纯 Rust 编写、完全遵循 NSH 官方设计规范与 shadcn/ui 主题系统、支持明暗主题自由切换与跟随系统、支持随意拖拽、矢量环形进度图标
 
 pub mod icons;
 pub mod model;
+pub mod theme_mode;
 
 use std::time::Duration;
 use nsh_core::prelude::*;
-use nsh_core::element::{desktop, input};
+use nsh_core::element::{desktop, input, AdaptiveColor};
 use nsh_core::desktop::{WindowFrame, WindowLevel};
-use nsh_base::{SliderValue, slider, collapsible};
+use nsh_base::{SliderValue, slider, collapsible, theme};
 use model::ReminderItem;
+use theme_mode::{ThemeMode, ACCENT_GOLD, ACCENT_GOLD_BG};
 
 #[cfg(target_os = "windows")]
 use nsh_platform_windows as platform;
@@ -19,6 +21,9 @@ static APP_HWND: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize
 
 #[cfg(target_os = "windows")]
 static CURRENT_OPACITY_PERCENT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(100);
+
+#[cfg(target_os = "windows")]
+static CURRENT_THEME_DARK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
 /// 设置 Windows 原生窗口透明度 (Layered Window Alpha)
 #[cfg(target_os = "windows")]
@@ -51,6 +56,31 @@ pub fn apply_window_opacity(opacity: f32) {
     set_native_window_opacity(opacity);
     let _ = opacity;
 }
+
+/// 设置 Windows 原生窗口暗色模式属性
+#[cfg(target_os = "windows")]
+pub fn set_native_dark_mode(dark: bool) {
+    CURRENT_THEME_DARK.store(dark, std::sync::atomic::Ordering::SeqCst);
+    let raw = APP_HWND.load(std::sync::atomic::Ordering::SeqCst);
+    if raw == 0 {
+        return;
+    }
+    use platform::windows::Win32::Foundation::HWND;
+    use platform::windows::Win32::Graphics::Dwm::*;
+    let hwnd = HWND(raw as *mut _);
+    let val: i32 = dark.into();
+    unsafe {
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_USE_IMMERSIVE_DARK_MODE,
+            &val as *const i32 as *const _,
+            std::mem::size_of::<i32>() as u32,
+        );
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn set_native_dark_mode(_dark: bool) {}
 
 /// Windows 挂件专用：配置为纯净无边框悬浮卡片，移除全部系统按钮与非客户区，保留 Win11 硬件圆角与阴影
 #[cfg(target_os = "windows")]
@@ -109,7 +139,17 @@ fn setup_floating_window() {
                         std::mem::size_of_val(&round_pref) as u32,
                     );
 
-                    // 4. 刷新非客户区，不改变位置、不改变尺寸、不改变Z序、不抢焦点
+                    // 4. 同步当前深浅色模式到 Win32 DWM
+                    let is_dark = CURRENT_THEME_DARK.load(std::sync::atomic::Ordering::SeqCst);
+                    let dark_val: i32 = is_dark.into();
+                    let _ = DwmSetWindowAttribute(
+                        target_hwnd,
+                        DWMWA_USE_IMMERSIVE_DARK_MODE,
+                        &dark_val as *const i32 as *const _,
+                        std::mem::size_of::<i32>() as u32,
+                    );
+
+                    // 5. 刷新非客户区，不改变位置、不改变尺寸、不改变Z序、不抢焦点
                     let _ = SetWindowPos(
                         target_hwnd,
                         None,
@@ -198,8 +238,15 @@ pub fn App() -> impl IntoElement {
         ..Default::default()
     });
 
-    // 4. 强制暗色模式：底层清屏彻底变为深黑色，杜绝任何浅色主题底色透出
-    nsh_core::element::set_color_scheme(nsh_core::platform::Appearance::Dark);
+    // 4. 主题模式状态：默认深色模式，支持明暗切换与跟随系统
+    let theme_mode = signal(ThemeMode::Dark);
+
+    // 主题与底层平台/渲染器联动：切换 NSH 官方色彩方案与 Windows DWM 深浅色
+    effect(move || {
+        let mode = theme_mode.get();
+        nsh_core::element::set_color_scheme(mode.to_appearance());
+        set_native_dark_mode(mode != ThemeMode::Light);
+    });
 
     // 5. 状态管理：默认预置通用基础提醒（喝水 30min、活动 45min、带薪拉屎 90min）
     let items = signal(vec![
@@ -239,15 +286,15 @@ pub fn App() -> impl IntoElement {
         }
     })));
 
-    // 纯正深灰冷黑底色（固定深色，不随操作系统亮色模式变化，保持精致挂件质感）
-    let card_bg = hsl(225.0, 9.0, 15.0);
-
-    // 根视图容器：纯净深灰黑铺满整个窗口，零白边，无多余外框，各平台原生呈现
+    // 根视图容器：基于 NSH 官方 theme().card 与 theme().border，原生自适应明暗，支持随意拖拽
     view()
         .window_drag(true) // 按住卡片空白处即可随意拖动窗口
         .w_full()
         .h_full()
-        .bg(card_bg)
+        .bg(move || theme().card)
+        .border_1()
+        .border_color(move || theme().border)
+        .rounded(px(12.0))
         .p(px(14.0))
         .flex_col()
         .justify_between()
@@ -266,8 +313,15 @@ pub fn App() -> impl IntoElement {
                         .w_full()
                         .flex_col()
                         .gap(px(6.0))
-                        // 新建/设置抽屉（点击齿轮平滑展开/折叠，纯 GPU 矢量物理弹簧动画）
-                        .child(render_drawer(show_settings, show_presets, show_custom_form, items, opacity))
+                        // 新建/设置抽屉（包含外观主题选择、透明度调节、推荐预设与自定义提醒）
+                        .child(render_drawer(
+                            show_settings,
+                            show_presets,
+                            show_custom_form,
+                            items,
+                            opacity,
+                            theme_mode,
+                        ))
                         // 核心提醒列表
                         .child(render_items(items)),
                 ),
@@ -302,17 +356,21 @@ fn render_header(
                         .w(px(24.0))
                         .h(px(24.0))
                         .rounded(px(6.0))
-                        .bg(hsl(45.0, 25.0, 18.0))
+                        .bg(ACCENT_GOLD_BG)
                         .items_center()
                         .justify_center()
                         .child(
-                            icons::icon_svg(icons::ICON_BELL, 13.0, hsl(45.0, 90.0, 60.0)),
+                            icons::icon_svg(
+                                icons::ICON_BELL,
+                                13.0,
+                                ACCENT_GOLD,
+                            ),
                         ),
                 )
                 .child(
                     text("reminder 提醒")
                         .text_size(px(13.5))
-                        .text_color(white().alpha(0.95)),
+                        .text_color(move || theme().foreground),
                 )
                 .child(
                     // 进行中数量指示小徽章
@@ -320,11 +378,11 @@ fn render_header(
                         .px(px(6.0))
                         .py(px(1.5))
                         .rounded(px(10.0))
-                        .bg(white().alpha(0.08))
+                        .bg(move || theme().muted)
                         .child(
                             text(move || count_text.get())
                                 .text_size(px(10.5))
-                                .text_color(white().alpha(0.60)),
+                                .text_color(move || theme().muted_foreground),
                         ),
                 ),
         )
@@ -343,15 +401,15 @@ fn render_header(
                         .rounded(px(5.0))
                         .items_center()
                         .justify_center()
-                        .bg(white().alpha(0.04))
+                        .bg(move || theme().secondary)
                         .active(|s| s.opacity(0.5))
                         .on_press(move || is_all_paused.update(|v| *v = !*v))
                         .child(
                             when(
                                 move || is_all_paused.get(),
-                                move || icons::icon_svg(icons::ICON_PLAY, 11.0, hsl(45.0, 90.0, 60.0)),
+                                move || icons::icon_svg(icons::ICON_PLAY, 11.0, ACCENT_GOLD),
                             )
-                            .otherwise(move || icons::icon_svg(icons::ICON_PAUSE, 11.0, white().alpha(0.65))),
+                            .otherwise(move || icons::icon_svg(icons::ICON_PAUSE, 11.0, move || theme().muted_foreground)),
                         ),
                 )
                 // 设置 / 新建
@@ -364,15 +422,33 @@ fn render_header(
                         .justify_center()
                         .bg(move || {
                             if show_settings.get() {
-                                white().alpha(0.18)
+                                ACCENT_GOLD_BG
                             } else {
-                                white().alpha(0.04)
+                                theme().secondary
+                            }
+                        })
+                        .border_1()
+                        .border_color(move || {
+                            if show_settings.get() {
+                                ACCENT_GOLD
+                            } else {
+                                theme().border
                             }
                         })
                         .active(|s| s.opacity(0.5))
                         .on_press(move || show_settings.update(|v| *v = !*v))
                         .child(
-                            icons::icon_svg(icons::ICON_SETTINGS, 12.0, white().alpha(0.70)),
+                            icons::dynamic_icon_svg(
+                                move || icons::ICON_SETTINGS,
+                                12.0,
+                                move || {
+                                    if show_settings.get() {
+                                        ACCENT_GOLD
+                                    } else {
+                                        theme().muted_foreground
+                                    }
+                                },
+                            ),
                         ),
                 )
                 // 退出挂件 (轻量悬浮叉叉)
@@ -383,11 +459,11 @@ fn render_header(
                         .rounded(px(5.0))
                         .items_center()
                         .justify_center()
-                        .bg(white().alpha(0.04))
+                        .bg(move || theme().secondary)
                         .active(|s| s.opacity(0.5))
                         .on_press(desktop::close_window)
                         .child(
-                            icons::icon_svg(icons::ICON_X, 11.0, white().alpha(0.65)),
+                            icons::icon_svg(icons::ICON_X, 11.0, move || theme().muted_foreground),
                         ),
                 ),
         )
@@ -414,7 +490,6 @@ fn render_item_row(
 ) -> impl IntoElement {
     let item_id = item_sig.get_untracked().id;
     let icon_key = item_sig.get_untracked().icon.clone();
-    let hex_color = icons::get_item_color(&icon_key);
 
     view()
         .window_drag(true)
@@ -424,12 +499,12 @@ fn render_item_row(
         .py(px(4.0))
         .px(px(4.0))
         .rounded(px(6.0))
-        // 到期时微光高亮警示底色
+        // 到期时以官方 destructive 柔和警示底色高亮
         .bg(move || {
             if item_sig.get().is_expired() {
-                hsl(0.0, 75.0, 25.0).alpha(0.35)
+                theme().destructive.opacity(0.12)
             } else {
-                white().alpha(0.0)
+                AdaptiveColor::TRANSPARENT
             }
         })
         // 左半部分：圆环进度图标 + 标题/时间
@@ -438,18 +513,19 @@ fn render_item_row(
                 .flex_row()
                 .items_center()
                 .gap(px(10.0))
-                // 左侧发光圆环进度图标（到期时红光警示）
+                // 左侧发光圆环进度图标（到期时红光警示，SVG 底轨原生自适应明暗）
                 .child(
                     view()
                         .w(px(36.0))
                         .h(px(36.0))
                         .items_center()
                         .justify_center()
+                        .text_color(move || theme().foreground)
                         .child(
                             svg(move || {
                                 let it = item_sig.get();
                                 let is_exp = it.is_expired();
-                                let color = if is_exp { "#f87171" } else { hex_color };
+                                let color = if is_exp { "#ef4444" } else { icons::get_item_color(&icon_key) };
                                 let ratio = if is_exp { 1.0 } else { it.progress_ratio() };
                                 let markup = icons::ring_progress_svg(&icon_key, ratio, color);
                                 nsh_core::element::ImageSrc::svg_markup(&markup)
@@ -472,7 +548,7 @@ fn render_item_row(
                                 .child(
                                     text(move || item_sig.get().name.clone())
                                         .text_size(px(13.0))
-                                        .text_color(white().alpha(0.92)),
+                                        .text_color(move || theme().foreground),
                                 )
                                 .child(
                                     view()
@@ -480,9 +556,9 @@ fn render_item_row(
                                         .px(px(4.0))
                                         .py(px(0.5))
                                         .rounded(px(3.0))
-                                        .bg(white().alpha(0.06))
+                                        .bg(move || theme().muted)
                                         .border_1()
-                                        .border_color(white().alpha(0.08))
+                                        .border_color(move || theme().border)
                                         .active(|s| s.opacity(0.5))
                                         .on_press(move || {
                                             items.update(|list| {
@@ -505,7 +581,7 @@ fn render_item_row(
                                         .child(
                                             text(move || format!("{}m", item_sig.get().interval_secs / 60))
                                                 .text_size(px(10.0))
-                                                .text_color(white().alpha(0.50)),
+                                                .text_color(move || theme().muted_foreground),
                                         ),
                                 ),
                         )
@@ -517,7 +593,7 @@ fn render_item_row(
                                 .child(
                                     when(
                                         move || item_sig.get().is_expired(),
-                                        move || icons::icon_svg(icons::ICON_ALERT, 11.0, hsl(0.0, 85.0, 65.0)),
+                                        move || icons::icon_svg(icons::ICON_ALERT, 11.0, move || theme().destructive),
                                     ),
                                 )
                                 .child(
@@ -525,9 +601,9 @@ fn render_item_row(
                                         .text_size(px(11.5))
                                         .text_color(move || {
                                             if item_sig.get().is_expired() {
-                                                hsl(0.0, 85.0, 68.0)
+                                                theme().destructive
                                             } else {
-                                                white().alpha(0.60)
+                                                theme().muted_foreground
                                             }
                                         }),
                                 ),
@@ -545,7 +621,7 @@ fn render_item_row(
                 .child(
                     text(move || format!("{}/8", item_sig.get().completed_count))
                         .text_size(px(12.0))
-                        .text_color(white().alpha(0.50)),
+                        .text_color(move || theme().muted_foreground),
                 )
                 // 操作按钮组
                 .child(
@@ -561,17 +637,17 @@ fn render_item_row(
                                 .rounded(px(5.0))
                                 .bg(move || {
                                     if item_sig.get().is_expired() {
-                                        hsl(145.0, 65.0, 35.0).alpha(0.65)
+                                        AdaptiveColor::rgb(0x16a34a, 0x15803d)
                                     } else {
-                                        white().alpha(0.08)
+                                        theme().secondary
                                     }
                                 })
                                 .border_1()
                                 .border_color(move || {
                                     if item_sig.get().is_expired() {
-                                        hsl(145.0, 75.0, 50.0).alpha(0.8)
+                                        AdaptiveColor::rgb(0x22c55e, 0x4ade80)
                                     } else {
-                                        white().alpha(0.12)
+                                        theme().border
                                     }
                                 })
                                 .items_center()
@@ -585,7 +661,17 @@ fn render_item_row(
                                     });
                                 })
                                 .child(
-                                    icons::icon_svg(icons::ICON_CHECK, 12.0, white().alpha(0.95)),
+                                    icons::dynamic_icon_svg(
+                                        move || icons::ICON_CHECK,
+                                        12.0,
+                                        move || {
+                                            if item_sig.get().is_expired() {
+                                                AdaptiveColor::rgb(0xffffff, 0xffffff)
+                                            } else {
+                                                theme().foreground
+                                            }
+                                        },
+                                    ),
                                 ),
                         )
                         // [+5] 延期 5 分钟按钮
@@ -594,9 +680,9 @@ fn render_item_row(
                                 .w(px(28.0))
                                 .h(px(24.0))
                                 .rounded(px(5.0))
-                                .bg(white().alpha(0.08))
+                                .bg(move || theme().secondary)
                                 .border_1()
-                                .border_color(white().alpha(0.12))
+                                .border_color(move || theme().border)
                                 .items_center()
                                 .justify_center()
                                 .active(|s| s.opacity(0.5))
@@ -610,8 +696,8 @@ fn render_item_row(
                                 .child(
                                     text("+5")
                                         .text_size(px(10.5))
-                                        .text_color(white().alpha(0.85)),
-                                 ),
+                                        .text_color(move || theme().secondary_foreground),
+                                ),
                         )
                         // [🗑] 移除该项提醒
                         .child(
@@ -621,13 +707,17 @@ fn render_item_row(
                                 .rounded(px(5.0))
                                 .items_center()
                                 .justify_center()
-                                .bg(white().alpha(0.04))
+                                .bg(move || theme().secondary)
                                 .active(|s| s.opacity(0.5))
                                 .on_press(move || {
                                     items.update(|list| list.retain(|x| x.id != item_id));
                                 })
                                 .child(
-                                    icons::icon_svg(icons::ICON_TRASH, 11.0, white().alpha(0.35)),
+                                    icons::icon_svg(
+                                        icons::ICON_TRASH,
+                                        11.0,
+                                        move || theme().muted_foreground,
+                                    ),
                                 ),
                         ),
                 ),
@@ -635,7 +725,10 @@ fn render_item_row(
 }
 
 /// 底部统计行：细线分隔 + 灰白小字通用统计 + 半透明时指示不透明度状态
-fn render_footer(items: Signal<Vec<ReminderItem>>, opacity: Signal<f32>) -> impl IntoElement {
+fn render_footer(
+    items: Signal<Vec<ReminderItem>>,
+    opacity: Signal<f32>,
+) -> impl IntoElement {
     let summary_text = computed(move || {
         items.with(|list| {
             let total_completed: u32 = list.iter().map(|i| i.completed_count).sum();
@@ -651,11 +744,11 @@ fn render_footer(items: Signal<Vec<ReminderItem>>, opacity: Signal<f32>) -> impl
         .justify_between()
         .pt(px(6.0))
         .border_t_1()
-        .border_color(white().alpha(0.06))
+        .border_color(move || theme().border)
         .child(
             text(move || summary_text.get())
                 .text_size(px(11.0))
-                .text_color(white().alpha(0.45)),
+                .text_color(move || theme().muted_foreground),
         )
         .child(
             when(
@@ -663,7 +756,7 @@ fn render_footer(items: Signal<Vec<ReminderItem>>, opacity: Signal<f32>) -> impl
                 move || {
                     text(move || format!("不透明度 {:.0}%", opacity.get() * 100.0))
                         .text_size(px(10.5))
-                        .text_color(hsl(45.0, 85.0, 60.0).alpha(0.80))
+                        .text_color(ACCENT_GOLD)
                 },
             ),
         )
@@ -687,17 +780,17 @@ fn render_preset_card(
         .rounded(px(5.0))
         .bg(move || {
             if is_running.get() {
-                hsl(145.0, 50.0, 20.0).alpha(0.35)
+                AdaptiveColor::rgb(0xdcfce7, 0x064e3b)
             } else {
-                white().alpha(0.04)
+                theme().secondary
             }
         })
         .border_1()
         .border_color(move || {
             if is_running.get() {
-                hsl(145.0, 60.0, 45.0).alpha(0.40)
+                AdaptiveColor::rgb(0x86efac, 0x059669)
             } else {
-                white().alpha(0.07)
+                theme().border
             }
         })
         .active(|s| s.opacity(0.6))
@@ -715,7 +808,7 @@ fn render_preset_card(
         .flex_row()
         .items_center()
         .justify_between()
-        // 左侧：对应矢量图标 + 预设名称（无任何对钩，干净对齐）
+        // 左侧：对应矢量图标 + 预设名称
         .child(
             view()
                 .flex_row()
@@ -725,7 +818,7 @@ fn render_preset_card(
                     icons::icon_svg(
                         icons::get_icon_markup(icon),
                         12.0,
-                        icons::get_item_hsla(icon),
+                        icons::get_item_adaptive(icon),
                     ),
                 )
                 .child(
@@ -733,14 +826,14 @@ fn render_preset_card(
                         .text_size(px(10.5))
                         .text_color(move || {
                             if is_running.get() {
-                                hsl(145.0, 75.0, 75.0)
+                                AdaptiveColor::rgb(0x166534, 0x6ee7b7)
                             } else {
-                                white().alpha(0.85)
+                                theme().foreground
                             }
                         }),
                 ),
         )
-        // 右侧：时长徽章（如 30m / 45m，运行中呈现清新激活绿色）
+        // 右侧：时长徽章
         .child(
             view()
                 .px(px(4.0))
@@ -748,9 +841,9 @@ fn render_preset_card(
                 .rounded(px(3.0))
                 .bg(move || {
                     if is_running.get() {
-                        hsl(145.0, 60.0, 30.0).alpha(0.35)
+                        AdaptiveColor::rgb(0xbbf7d0, 0x065f46)
                     } else {
-                        white().alpha(0.06)
+                        theme().muted
                     }
                 })
                 .child(
@@ -758,22 +851,23 @@ fn render_preset_card(
                         .text_size(px(9.5))
                         .text_color(move || {
                             if is_running.get() {
-                                hsl(145.0, 70.0, 70.0)
+                                AdaptiveColor::rgb(0x14532d, 0xa7f3d0)
                             } else {
-                                white().alpha(0.40)
+                                theme().muted_foreground
                             }
                         }),
                 ),
         )
 }
 
-/// 设置与添加新提醒抽屉（点击齿轮展开，支持窗口不透明度调节、推荐快速开启与优雅折叠的自定义新提醒）
+/// 设置与添加新提醒抽屉（点击齿轮展开，支持外观主题切换、窗口不透明度调节、推荐快速开启与优雅折叠的自定义新提醒）
 fn render_drawer(
     show: Signal<bool>,
     show_presets: Signal<bool>,
     show_custom_form: Signal<bool>,
     items: Signal<Vec<ReminderItem>>,
     opacity: Signal<f32>,
+    theme_mode: Signal<ThemeMode>,
 ) -> impl IntoElement {
     let custom_name = signal(String::new());
     let custom_mins_str = signal("30".to_string());
@@ -789,15 +883,134 @@ fn render_drawer(
                 .p(px(8.0))
                 .mb(px(4.0))
                 .rounded(px(8.0))
-                .bg(white().alpha(0.06))
+                .bg(move || theme().muted.opacity(0.40))
+                .border_1()
+                .border_color(move || theme().border)
                 .flex_col()
                 .gap(px(6.0))
-                // 1. 窗口不透明度调节区 (纯粹专注的 NSH 官方原生 slider 组件)
+                // 1. 外观主题切换控制区 (浅色模式 / 深色模式 / 跟随系统)
                 .child(
                     view()
                         .flex_col()
                         .gap(px(4.0))
-                        // 第一行：标题 + 当前数值百分比徽章 (100% = 完全不透明)
+                        .child(
+                            view()
+                                .flex_row()
+                                .items_center()
+                                .justify_between()
+                                .child(
+                                    view()
+                                        .flex_row()
+                                        .items_center()
+                                        .gap(px(6.0))
+                                        .child(icons::dynamic_icon_svg(
+                                            move || match theme_mode.get() {
+                                                ThemeMode::Light => icons::ICON_SUN,
+                                                ThemeMode::Dark => icons::ICON_MOON,
+                                                ThemeMode::System => icons::ICON_LAPTOP,
+                                            },
+                                            12.0,
+                                            ACCENT_GOLD,
+                                        ))
+                                        .child(
+                                            text("外观主题")
+                                                .text_size(px(11.5))
+                                                .text_color(move || theme().foreground),
+                                        ),
+                                )
+                                .child(
+                                    view()
+                                        .px(px(6.0))
+                                        .py(px(1.5))
+                                        .rounded(px(4.0))
+                                        .bg(ACCENT_GOLD_BG)
+                                        .child(
+                                            text(move || theme_mode.get().label())
+                                                .text_size(px(10.5))
+                                                .text_color(ACCENT_GOLD),
+                                        ),
+                                ),
+                        )
+                        .child(
+                            view()
+                                .w_full()
+                                .flex_row()
+                                .gap(px(4.0))
+                                .children([
+                                    (ThemeMode::Light, "浅色模式", icons::ICON_SUN),
+                                    (ThemeMode::Dark, "深色模式", icons::ICON_MOON),
+                                    (ThemeMode::System, "跟随系统", icons::ICON_LAPTOP),
+                                ].into_iter().map(|(mode, label, icon)| {
+                                    let is_selected = computed(move || theme_mode.get() == mode);
+                                    view()
+                                        .flex_1()
+                                        .h(px(24.0))
+                                        .rounded(px(5.0))
+                                        .bg(move || {
+                                            if is_selected.get() {
+                                                ACCENT_GOLD_BG
+                                            } else {
+                                                theme().secondary
+                                            }
+                                        })
+                                        .border_1()
+                                        .border_color(move || {
+                                            if is_selected.get() {
+                                                ACCENT_GOLD
+                                            } else {
+                                                theme().border
+                                            }
+                                        })
+                                        .items_center()
+                                        .justify_center()
+                                        .active(|s| s.opacity(0.6))
+                                        .on_press(move || theme_mode.set(mode))
+                                        .child(
+                                            view()
+                                                .flex_row()
+                                                .items_center()
+                                                .gap(px(4.0))
+                                                .child(
+                                                    icons::icon_svg(
+                                                        icon,
+                                                        11.0,
+                                                        move || {
+                                                            if is_selected.get() {
+                                                                ACCENT_GOLD
+                                                            } else {
+                                                                theme().muted_foreground
+                                                            }
+                                                        },
+                                                    ),
+                                                )
+                                                .child(
+                                                    text(label)
+                                                        .text_size(px(10.5))
+                                                        .text_color(move || {
+                                                            if is_selected.get() {
+                                                                ACCENT_GOLD
+                                                            } else {
+                                                                theme().muted_foreground
+                                                            }
+                                                        }),
+                                                ),
+                                        )
+                                })),
+                        ),
+                )
+                // 细分割线
+                .child(
+                    view()
+                        .w_full()
+                        .my(px(2.0))
+                        .border_t_1()
+                        .border_color(move || theme().border),
+                )
+                // 2. 窗口不透明度调节区 (纯粹专注的 NSH 官方原生 slider 组件)
+                .child(
+                    view()
+                        .flex_col()
+                        .gap(px(4.0))
                         .child(
                             view()
                                 .flex_row()
@@ -811,12 +1024,12 @@ fn render_drawer(
                                         .child(icons::icon_svg(
                                             icons::ICON_OPACITY,
                                             12.0,
-                                            hsl(45.0, 85.0, 60.0),
+                                            ACCENT_GOLD,
                                         ))
                                         .child(
                                             text("窗口不透明度")
                                                 .text_size(px(11.5))
-                                                .text_color(white().alpha(0.85)),
+                                                .text_color(move || theme().foreground),
                                         ),
                                 )
                                 .child(
@@ -824,15 +1037,14 @@ fn render_drawer(
                                         .px(px(6.0))
                                         .py(px(1.5))
                                         .rounded(px(4.0))
-                                        .bg(white().alpha(0.06))
+                                        .bg(ACCENT_GOLD_BG)
                                         .child(
                                             text(move || format!("{:.0}%", opacity.get() * 100.0))
                                                 .text_size(px(11.0))
-                                                .text_color(hsl(45.0, 90.0, 62.0)),
+                                                .text_color(ACCENT_GOLD),
                                         ),
                                 ),
                         )
-                        // 第二行：NSH 官方原生 slider() 滑块组件，平滑无级拖拽与键盘方向键微调
                         .child(
                             view()
                                 .w_full()
@@ -849,14 +1061,18 @@ fn render_drawer(
                                         })
                                         .accessibility_label("窗口不透明度")
                                         .track_style(|s| s.w_full().h(px(20.0)).justify_center())
-                                        .indicator_style(|s| s.h(px(4.0)).rounded_full().bg(white().alpha(0.15)))
-                                        .range_style(|s| s.rounded_full().bg(hsl(45.0, 90.0, 60.0)))
-                                        .thumb_style(|s| {
+                                        .indicator_style(move |s| {
+                                            s.h(px(4.0)).rounded_full().bg(theme().muted)
+                                        })
+                                        .range_style(move |s| {
+                                            s.rounded_full().bg(ACCENT_GOLD)
+                                        })
+                                        .thumb_style(move |s| {
                                             s.size(px(13.0))
                                                 .rounded_full()
-                                                .bg(white())
+                                                .bg(theme().background)
                                                 .border_1()
-                                                .border_color(hsl(45.0, 90.0, 60.0))
+                                                .border_color(ACCENT_GOLD)
                                         }),
                                 ),
                         ),
@@ -867,33 +1083,26 @@ fn render_drawer(
                         .w_full()
                         .my(px(2.0))
                         .border_t_1()
-                        .border_color(white().alpha(0.08)),
+                        .border_color(move || theme().border),
                 )
-                // 2. 基于 Collapsible 的常用推荐区域：支持平滑折叠，预设 6 项精炼对称双列卡片排版
+                // 3. 基于 Collapsible 的常用推荐区域：支持平滑折叠，预设 6 项精炼对称双列卡片排版
                 .child(
                     collapsible()
                         .open(show_presets)
                         .reveal(true)
-                        // Trigger: 常用推荐折叠栏触发条
                         .child(
                             view()
                                 .w_full()
                                 .px(px(8.0))
                                 .py(px(4.0))
                                 .rounded(px(5.0))
-                                .bg(move || {
-                                    if show_presets.get() {
-                                        white().alpha(0.09)
-                                    } else {
-                                        white().alpha(0.04)
-                                    }
-                                })
+                                .bg(move || theme().secondary)
                                 .border_1()
                                 .border_color(move || {
                                     if show_presets.get() {
-                                        hsl(45.0, 90.0, 60.0).alpha(0.35)
+                                        ACCENT_GOLD
                                     } else {
-                                        white().alpha(0.06)
+                                        theme().border
                                     }
                                 })
                                 .active(|s| s.opacity(0.6))
@@ -909,17 +1118,17 @@ fn render_drawer(
                                         .child(icons::icon_svg(
                                             icons::ICON_STAR,
                                             11.5,
-                                            hsl(45.0, 90.0, 62.0),
+                                            ACCENT_GOLD,
                                         ))
                                         .child(
                                             text("常用推荐")
                                                 .text_size(px(11.0))
-                                                .text_color(hsl(45.0, 90.0, 65.0)),
+                                                .text_color(ACCENT_GOLD),
                                         )
                                         .child(
                                             text("(6项预设)")
                                                 .text_size(px(10.0))
-                                                .text_color(white().alpha(0.40)),
+                                                .text_color(move || theme().muted_foreground),
                                         ),
                                 )
                                 .child(
@@ -930,7 +1139,7 @@ fn render_drawer(
                                         .child(
                                             text(move || if show_presets.get() { "收起" } else { "展开" })
                                                 .text_size(px(10.5))
-                                                .text_color(white().alpha(0.45)),
+                                                .text_color(move || theme().muted_foreground),
                                         )
                                         .child(
                                             icons::dynamic_icon_svg(
@@ -942,21 +1151,20 @@ fn render_drawer(
                                                     }
                                                 },
                                                 11.0,
-                                                white().alpha(0.45),
+                                                move || theme().muted_foreground,
                                             ),
                                         ),
                                 ),
                         )
-                        // Content: 展开后的 6 项 2列x3行 对称精炼卡片面板
                         .content(
                             view()
                                 .w_full()
                                 .mt(px(4.0))
                                 .p(px(6.0))
                                 .rounded(px(6.0))
-                                .bg(hsl(225.0, 10.0, 12.0))
+                                .bg(move || theme().card)
                                 .border_1()
-                                .border_color(white().alpha(0.08))
+                                .border_color(move || theme().border)
                                 .flex_col()
                                 .gap(px(4.5))
                                 .children(PRESETS.chunks(2).map(|pair| {
@@ -976,33 +1184,26 @@ fn render_drawer(
                         .w_full()
                         .my(px(2.0))
                         .border_t_1()
-                        .border_color(white().alpha(0.08)),
+                        .border_color(move || theme().border),
                 )
-                // 3. 基于 Collapsible 的自定义新提醒区域：默认收起，点击平滑展开完整配置面板
+                // 4. 基于 Collapsible 的自定义新提醒区域：默认收起，点击平滑展开完整配置面板
                 .child(
                     collapsible()
                         .open(show_custom_form)
                         .reveal(true)
-                        // Trigger: 折叠栏触发条
                         .child(
                             view()
                                 .w_full()
                                 .px(px(8.0))
                                 .py(px(4.0))
                                 .rounded(px(5.0))
-                                .bg(move || {
-                                    if show_custom_form.get() {
-                                        white().alpha(0.09)
-                                    } else {
-                                        white().alpha(0.04)
-                                    }
-                                })
+                                .bg(move || theme().secondary)
                                 .border_1()
                                 .border_color(move || {
                                     if show_custom_form.get() {
-                                        hsl(45.0, 90.0, 60.0).alpha(0.35)
+                                        ACCENT_GOLD
                                     } else {
-                                        white().alpha(0.06)
+                                        theme().border
                                     }
                                 })
                                 .active(|s| s.opacity(0.6))
@@ -1018,12 +1219,12 @@ fn render_drawer(
                                         .child(icons::icon_svg(
                                             icons::ICON_EDIT,
                                             11.5,
-                                            hsl(45.0, 90.0, 62.0),
+                                            ACCENT_GOLD,
                                         ))
                                         .child(
                                             text("自定义新提醒")
                                                 .text_size(px(11.0))
-                                                .text_color(hsl(45.0, 90.0, 65.0)),
+                                                .text_color(ACCENT_GOLD),
                                         ),
                                 )
                                 .child(
@@ -1034,7 +1235,7 @@ fn render_drawer(
                                         .child(
                                             text(move || if show_custom_form.get() { "收起" } else { "配置" })
                                                 .text_size(px(10.5))
-                                                .text_color(white().alpha(0.45)),
+                                                .text_color(move || theme().muted_foreground),
                                         )
                                         .child(
                                             icons::dynamic_icon_svg(
@@ -1046,21 +1247,20 @@ fn render_drawer(
                                                     }
                                                 },
                                                 11.0,
-                                                white().alpha(0.45),
+                                                move || theme().muted_foreground,
                                             ),
                                         ),
                                 ),
                         )
-                        // Content: 展开后的专属精美配置面板
                         .content(
                             view()
                                 .w_full()
                                 .mt(px(4.0))
                                 .p(px(8.0))
                                 .rounded(px(6.0))
-                                .bg(hsl(225.0, 10.0, 12.0))
+                                .bg(move || theme().card)
                                 .border_1()
-                                .border_color(white().alpha(0.08))
+                                .border_color(move || theme().border)
                                 .flex_col()
                                 .gap(px(6.0))
                                 // Field 1: 提醒名称
@@ -1076,12 +1276,12 @@ fn render_drawer(
                                                 .child(
                                                     text("提醒事项名称")
                                                         .text_size(px(10.0))
-                                                        .text_color(white().alpha(0.45)),
+                                                        .text_color(move || theme().muted_foreground),
                                                 )
                                                 .child(
                                                     text(move || error_tip.get().unwrap_or_default())
                                                         .text_size(px(10.0))
-                                                        .text_color(hsl(0.0, 85.0, 70.0)),
+                                                        .text_color(move || theme().destructive),
                                                 ),
                                         )
                                         .child(
@@ -1096,12 +1296,11 @@ fn render_drawer(
                                                 .h(px(25.0))
                                                 .px(px(8.0))
                                                 .rounded(px(4.0))
-                                                .bg(white().alpha(0.06))
+                                                .bg(move || theme().background)
                                                 .border_1()
-                                                .border_color(white().alpha(0.12))
+                                                .border_color(move || theme().input)
                                                 .text_size(px(11.0))
-                                                .text_color(white().alpha(0.95))
-                                                .placeholder_color(white().alpha(0.30)),
+                                                .text_color(move || theme().foreground),
                                         ),
                                 )
                                 // Field 2: 循环周期（键盘直接输入 + 1分钟微调 + 快捷填入）
@@ -1117,7 +1316,7 @@ fn render_drawer(
                                                 .child(
                                                     text("循环周期")
                                                         .text_size(px(10.0))
-                                                        .text_color(white().alpha(0.45)),
+                                                        .text_color(move || theme().muted_foreground),
                                                 )
                                                 .child(
                                                     view()
@@ -1130,7 +1329,7 @@ fn render_drawer(
                                                                 .w(px(18.0))
                                                                 .h(px(19.0))
                                                                 .rounded(px(3.0))
-                                                                .bg(white().alpha(0.08))
+                                                                .bg(move || theme().secondary)
                                                                 .items_center()
                                                                 .justify_center()
                                                                 .active(|s| s.opacity(0.5))
@@ -1140,7 +1339,7 @@ fn render_drawer(
                                                                     custom_mins_str.set(next.to_string());
                                                                     error_tip.set(None);
                                                                 })
-                                                                .child(text("-").text_size(px(11.0)).text_color(white().alpha(0.70))),
+                                                                .child(text("-").text_size(px(11.0)).text_color(move || theme().secondary_foreground)),
                                                         )
                                                         // 数字文本输入框：支持点击键盘任意输入
                                                         .child(
@@ -1156,11 +1355,11 @@ fn render_drawer(
                                                                 .h(px(19.0))
                                                                 .px(px(4.0))
                                                                 .rounded(px(3.0))
-                                                                .bg(white().alpha(0.08))
+                                                                .bg(move || theme().background)
                                                                 .border_1()
-                                                                .border_color(hsl(45.0, 90.0, 60.0).alpha(0.40))
+                                                                .border_color(ACCENT_GOLD)
                                                                 .text_size(px(11.0))
-                                                                .text_color(hsl(45.0, 90.0, 65.0)),
+                                                                .text_color(ACCENT_GOLD),
                                                         )
                                                         // 加 1 分钟
                                                         .child(
@@ -1168,7 +1367,7 @@ fn render_drawer(
                                                                 .w(px(18.0))
                                                                 .h(px(19.0))
                                                                 .rounded(px(3.0))
-                                                                .bg(white().alpha(0.08))
+                                                                .bg(move || theme().secondary)
                                                                 .items_center()
                                                                 .justify_center()
                                                                 .active(|s| s.opacity(0.5))
@@ -1178,12 +1377,12 @@ fn render_drawer(
                                                                     custom_mins_str.set(next.to_string());
                                                                     error_tip.set(None);
                                                                 })
-                                                                .child(text("+").text_size(px(11.0)).text_color(white().alpha(0.70))),
+                                                                .child(text("+").text_size(px(11.0)).text_color(move || theme().secondary_foreground)),
                                                         )
                                                         .child(
                                                             text("分钟")
                                                                 .text_size(px(10.0))
-                                                                .text_color(white().alpha(0.50)),
+                                                                .text_color(move || theme().muted_foreground),
                                                         ),
                                                 ),
                                         )
@@ -1197,30 +1396,31 @@ fn render_drawer(
                                                 .child(
                                                     text("快捷填入:")
                                                         .text_size(px(9.5))
-                                                        .text_color(white().alpha(0.35)),
+                                                        .text_color(move || theme().muted_foreground),
                                                 )
                                                 .child(
                                                     view()
                                                         .flex_row()
                                                         .gap(px(3.0))
                                                         .children([15, 25, 30, 45, 60, 90].iter().map(|&mins| {
+                                                            let is_sel = computed(move || custom_mins_str.get() == mins.to_string());
                                                             view()
                                                                 .px(px(5.0))
                                                                 .py(px(1.5))
                                                                 .rounded(px(3.0))
                                                                 .bg(move || {
-                                                                    if custom_mins_str.get() == mins.to_string() {
-                                                                        hsl(45.0, 90.0, 60.0).alpha(0.25)
+                                                                    if is_sel.get() {
+                                                                        ACCENT_GOLD_BG
                                                                     } else {
-                                                                        white().alpha(0.05)
+                                                                        theme().secondary
                                                                     }
                                                                 })
                                                                 .border_1()
                                                                 .border_color(move || {
-                                                                    if custom_mins_str.get() == mins.to_string() {
-                                                                        hsl(45.0, 90.0, 60.0).alpha(0.60)
+                                                                    if is_sel.get() {
+                                                                        ACCENT_GOLD
                                                                     } else {
-                                                                        white().alpha(0.04)
+                                                                        theme().border
                                                                     }
                                                                 })
                                                                 .active(|s| s.opacity(0.6))
@@ -1232,10 +1432,10 @@ fn render_drawer(
                                                                     text(format!("{}m", mins))
                                                                         .text_size(px(9.5))
                                                                         .text_color(move || {
-                                                                            if custom_mins_str.get() == mins.to_string() {
-                                                                                hsl(45.0, 90.0, 65.0)
+                                                                            if is_sel.get() {
+                                                                                ACCENT_GOLD
                                                                             } else {
-                                                                                white().alpha(0.50)
+                                                                                theme().muted_foreground
                                                                             }
                                                                         }),
                                                                 )
@@ -1251,7 +1451,7 @@ fn render_drawer(
                                         .child(
                                             text("图标主题")
                                                 .text_size(px(10.0))
-                                                .text_color(white().alpha(0.45)),
+                                                .text_color(move || theme().muted_foreground),
                                         )
                                         .child(
                                             view()
@@ -1267,24 +1467,24 @@ fn render_drawer(
                                                             "droplet", "coffee", "walk", "activity",
                                                             "eye", "pill", "heart", "sun",
                                                         ].iter().map(|&ic| {
-                                                            let item_hsla = icons::get_item_hsla(ic);
+                                                            let is_sel = computed(move || custom_icon.get() == ic);
                                                             view()
                                                                 .w(px(24.0))
                                                                 .h(px(24.0))
                                                                 .rounded(px(4.0))
                                                                 .bg(move || {
-                                                                    if custom_icon.get() == ic {
-                                                                        item_hsla.alpha(0.20)
+                                                                    if is_sel.get() {
+                                                                        icons::get_item_adaptive(ic).opacity(0.20)
                                                                     } else {
-                                                                        white().alpha(0.04)
+                                                                        theme().secondary
                                                                     }
                                                                 })
                                                                 .border_1()
                                                                 .border_color(move || {
-                                                                    if custom_icon.get() == ic {
-                                                                        item_hsla.alpha(0.80)
+                                                                    if is_sel.get() {
+                                                                        icons::get_item_adaptive(ic)
                                                                     } else {
-                                                                        white().alpha(0.06)
+                                                                        theme().border
                                                                     }
                                                                 })
                                                                 .items_center()
@@ -1296,10 +1496,10 @@ fn render_drawer(
                                                                         icons::get_icon_markup(ic),
                                                                         12.0,
                                                                         move || {
-                                                                            if custom_icon.get() == ic {
-                                                                                item_hsla
+                                                                            if is_sel.get() {
+                                                                                icons::get_item_adaptive(ic)
                                                                             } else {
-                                                                                white().alpha(0.40)
+                                                                                theme().muted_foreground
                                                                             }
                                                                         },
                                                                     ),
@@ -1316,24 +1516,24 @@ fn render_drawer(
                                                             "clock", "book", "laptop", "target",
                                                             "moon", "apple", "toilet", "bell",
                                                         ].iter().map(|&ic| {
-                                                            let item_hsla = icons::get_item_hsla(ic);
+                                                            let is_sel = computed(move || custom_icon.get() == ic);
                                                             view()
                                                                 .w(px(24.0))
                                                                 .h(px(24.0))
                                                                 .rounded(px(4.0))
                                                                 .bg(move || {
-                                                                    if custom_icon.get() == ic {
-                                                                        item_hsla.alpha(0.20)
+                                                                    if is_sel.get() {
+                                                                        icons::get_item_adaptive(ic).opacity(0.20)
                                                                     } else {
-                                                                        white().alpha(0.04)
+                                                                        theme().secondary
                                                                     }
                                                                 })
                                                                 .border_1()
                                                                 .border_color(move || {
-                                                                    if custom_icon.get() == ic {
-                                                                        item_hsla.alpha(0.80)
+                                                                    if is_sel.get() {
+                                                                        icons::get_item_adaptive(ic)
                                                                     } else {
-                                                                        white().alpha(0.06)
+                                                                        theme().border
                                                                     }
                                                                 })
                                                                 .items_center()
@@ -1345,10 +1545,10 @@ fn render_drawer(
                                                                         icons::get_icon_markup(ic),
                                                                         12.0,
                                                                         move || {
-                                                                            if custom_icon.get() == ic {
-                                                                                item_hsla
+                                                                            if is_sel.get() {
+                                                                                icons::get_item_adaptive(ic)
                                                                             } else {
-                                                                                white().alpha(0.40)
+                                                                                theme().muted_foreground
                                                                             }
                                                                         },
                                                                     ),
@@ -1369,7 +1569,7 @@ fn render_drawer(
                                                 .px(px(8.0))
                                                 .h(px(22.0))
                                                 .rounded(px(4.0))
-                                                .bg(white().alpha(0.06))
+                                                .bg(move || theme().secondary)
                                                 .items_center()
                                                 .justify_center()
                                                 .active(|s| s.opacity(0.5))
@@ -1380,7 +1580,7 @@ fn render_drawer(
                                                 .child(
                                                     text("收起")
                                                         .text_size(px(10.5))
-                                                        .text_color(white().alpha(0.50)),
+                                                        .text_color(move || theme().muted_foreground),
                                                 ),
                                         )
                                         .child(
@@ -1388,7 +1588,7 @@ fn render_drawer(
                                                 .px(px(12.0))
                                                 .h(px(22.0))
                                                 .rounded(px(4.0))
-                                                .bg(hsl(45.0, 90.0, 56.0))
+                                                .bg(ACCENT_GOLD)
                                                 .items_center()
                                                 .justify_center()
                                                 .active(|s| s.opacity(0.6))
@@ -1427,7 +1627,7 @@ fn render_drawer(
                                                 .child(
                                                     text("开启提醒")
                                                         .text_size(px(11.0))
-                                                        .text_color(hsl(225.0, 25.0, 10.0)),
+                                                        .text_color(AdaptiveColor::rgb(0xffffff, 0x000000)),
                                                 ),
                                         ),
                                 ),
@@ -1457,6 +1657,12 @@ mod tests {
         apply_window_opacity(0.50);
         apply_window_opacity(0.10); // 会自动 clamp 到 0.20
         apply_window_opacity(1.50); // 会自动 clamp 到 1.00
+    }
+
+    #[test]
+    fn test_set_native_dark_mode() {
+        set_native_dark_mode(true);
+        set_native_dark_mode(false);
     }
 
     #[test]
