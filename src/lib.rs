@@ -8,16 +8,55 @@ use std::time::Duration;
 use nsh_core::prelude::*;
 use nsh_core::element::desktop;
 use nsh_core::desktop::{WindowFrame, WindowLevel};
+use nsh_base::{SliderValue, slider};
 use model::ReminderItem;
 
 #[cfg(target_os = "windows")]
 use nsh_platform_windows as platform;
 
+#[cfg(target_os = "windows")]
+static APP_HWND: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
+#[cfg(target_os = "windows")]
+static CURRENT_OPACITY_PERCENT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(100);
+
+/// 设置 Windows 原生窗口透明度 (Layered Window Alpha)
+#[cfg(target_os = "windows")]
+pub fn set_native_window_opacity(opacity: f32) {
+    let opacity = opacity.clamp(0.20, 1.0);
+    let percent = (opacity * 100.0).round() as u32;
+    CURRENT_OPACITY_PERCENT.store(percent, std::sync::atomic::Ordering::SeqCst);
+
+    let raw = APP_HWND.load(std::sync::atomic::Ordering::SeqCst);
+    if raw == 0 {
+        return;
+    }
+    use platform::windows::Win32::Foundation::{HWND, COLORREF};
+    use platform::windows::Win32::UI::WindowsAndMessaging::*;
+
+    let hwnd = HWND(raw as *mut _);
+    unsafe {
+        let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);
+        if (ex_style & (WS_EX_LAYERED.0 as i32)) == 0 {
+            let _ = SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style | WS_EX_LAYERED.0 as i32);
+        }
+        let alpha = (opacity * 255.0).round() as u8;
+        let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), alpha, LWA_ALPHA);
+    }
+}
+
+/// 跨平台透明度应用接口
+pub fn apply_window_opacity(opacity: f32) {
+    #[cfg(target_os = "windows")]
+    set_native_window_opacity(opacity);
+    let _ = opacity;
+}
+
 /// Windows 挂件专用：配置为纯净无边框悬浮卡片，移除全部系统按钮与非客户区，保留 Win11 硬件圆角与阴影
 #[cfg(target_os = "windows")]
 fn setup_floating_window() {
     std::thread::spawn(|| {
-        use platform::windows::Win32::Foundation::{HWND, LPARAM};
+        use platform::windows::Win32::Foundation::{HWND, LPARAM, COLORREF};
         use platform::windows::Win32::System::Threading::GetCurrentProcessId;
         use platform::windows::Win32::UI::WindowsAndMessaging::*;
         use platform::windows::Win32::Graphics::Dwm::*;
@@ -47,12 +86,21 @@ fn setup_floating_window() {
 
             if !target_hwnd.is_invalid() {
                 unsafe {
+                    APP_HWND.store(target_hwnd.0 as isize, std::sync::atomic::Ordering::SeqCst);
+
                     // 1. 设置为纯净无边框悬浮挂件卡片样式 (WS_POPUP | WS_VISIBLE | WS_CLIPSIBLINGS)
                     //    彻底剥离 WS_CAPTION、WS_THICKFRAME 以及系统三键，不留任何非客户区边框
                     let popup_style = (WS_POPUP.0 | WS_VISIBLE.0 | WS_CLIPSIBLINGS.0) as i32;
                     SetWindowLongW(target_hwnd, GWL_STYLE, popup_style);
 
-                    // 2. 启用 Win11 原生硬件级平滑圆角 (DWMWCP_ROUND = 2)
+                    // 2. 启用分层窗口 (WS_EX_LAYERED) 并应用当前预设透明度
+                    let ex_style = GetWindowLongW(target_hwnd, GWL_EXSTYLE);
+                    SetWindowLongW(target_hwnd, GWL_EXSTYLE, ex_style | WS_EX_LAYERED.0 as i32);
+                    let percent = CURRENT_OPACITY_PERCENT.load(std::sync::atomic::Ordering::SeqCst);
+                    let alpha = ((percent as f32 / 100.0) * 255.0).round() as u8;
+                    let _ = SetLayeredWindowAttributes(target_hwnd, COLORREF(0), alpha, LWA_ALPHA);
+
+                    // 3. 启用 Win11 原生硬件级平滑圆角 (DWMWCP_ROUND = 2)
                     let round_pref: u32 = 2;
                     let _ = DwmSetWindowAttribute(
                         target_hwnd,
@@ -61,11 +109,11 @@ fn setup_floating_window() {
                         std::mem::size_of_val(&round_pref) as u32,
                     );
 
-                    // 3. 启用系统原生精致阴影 (CS_DROPSHADOW)
+                    // 4. 启用系统原生精致阴影 (CS_DROPSHADOW)
                     let class_style = GetClassLongPtrW(target_hwnd, GCL_STYLE);
                     SetClassLongPtrW(target_hwnd, GCL_STYLE, (class_style | CS_DROPSHADOW.0 as usize) as isize);
 
-                    // 4. 刷新非客户区，不改变位置、不改变尺寸、不改变Z序、不抢焦点
+                    // 5. 刷新非客户区，不改变位置、不改变尺寸、不改变Z序、不抢焦点
                     let _ = SetWindowPos(
                         target_hwnd,
                         None,
@@ -86,13 +134,13 @@ fn setup_floating_window() {
 pub const WINDOW_WIDTH: f32 = 320.0;
 pub const BASE_CONTENT_HEIGHT: f32 = 102.0; // padding (28) + header (30) + footer (22) + gaps (22)
 pub const ITEM_ROW_HEIGHT: f32 = 46.0;
-pub const DRAWER_HEIGHT: f32 = 120.0;
+pub const DRAWER_HEIGHT: f32 = 148.0;
 
 /// 根据提醒项目数量和设置抽屉展开状态精确计算窗口高度
 pub fn calculate_window_height(item_count: usize, is_drawer_open: bool) -> f32 {
     let items_h = item_count as f32 * ITEM_ROW_HEIGHT;
     let drawer_h = if is_drawer_open { DRAWER_HEIGHT } else { 0.0 };
-    (BASE_CONTENT_HEIGHT + items_h + drawer_h).clamp(195.0, 520.0)
+    (BASE_CONTENT_HEIGHT + items_h + drawer_h).clamp(195.0, 560.0)
 }
 
 /// 触发倒计时到期提醒（声音、系统原生通知、窗口置顶唤起）
@@ -167,9 +215,16 @@ pub fn App() -> impl IntoElement {
         ReminderItem::new("带薪拉屎", "toilet", 90 * 60),
     ]);
 
-    // 全局暂停状态与设置面板展开状态
+    // 全局暂停状态与设置面板展开状态，以及窗口不透明度状态 (0.2 ~ 1.0)
     let is_all_paused = signal(false);
     let show_settings = signal(false);
+    let opacity = signal(1.0_f32);
+
+    // 窗口不透明度响应式联动：当 opacity 发生变化时，实时调用原生窗口 API
+    effect(move || {
+        let val = opacity.get();
+        apply_window_opacity(val);
+    });
 
     // 窗口高度动态自适应：点击设置抽屉或增减提醒项时动态调节高度，并支持平滑滚动，杜绝遮挡
     effect(move || {
@@ -216,12 +271,12 @@ pub fn App() -> impl IntoElement {
         .gap(px(8.0))
         // 1. 顶栏：通用「reminder 提醒」金黄微标与标题，右侧挂件操作按钮组（暂停、设置、关闭）
         .child(render_header(items, is_all_paused, show_settings))
-        // 2. 新建/设置抽屉（点击顶部设置/新建时平滑展开，窗口自动变大，不挤压内容）
-        .child(render_drawer(show_settings, items))
+        // 2. 新建/设置抽屉（点击顶部设置/新建时平滑展开，窗口自动变大，支持不透明度调节与快捷提醒添加）
+        .child(render_drawer(show_settings, items, opacity))
         // 3. 核心提醒列表（基于 each 响应式驱动更新与增减）
         .child(render_items(items))
-        // 4. 底部状态行（通用统计：「进行中 X 项 · 今日打卡 Y 次」）
-        .child(render_footer(items))
+        // 4. 底部状态行（通用统计：「进行中 X 项 · 今日打卡 Y 次」，若处于半透明状态则额外指示不透明度）
+        .child(render_footer(items, opacity))
 }
 
 /// 顶部 Header：左侧金黄微标与标题，右侧挂件操作按钮组（暂停、设置/添加、关闭退出）
@@ -546,10 +601,13 @@ fn render_item_row(
         )
 }
 
-/// 底部统计行：细线分隔 + 灰白小字通用统计
-fn render_footer(items: Signal<Vec<ReminderItem>>) -> impl IntoElement {
+/// 底部统计行：细线分隔 + 灰白小字通用统计 + 半透明时指示不透明度状态
+fn render_footer(items: Signal<Vec<ReminderItem>>, opacity: Signal<f32>) -> impl IntoElement {
     view()
         .window_drag(true)
+        .flex_row()
+        .items_center()
+        .justify_between()
         .pt(px(6.0))
         .border_t_1()
         .border_color(white().alpha(0.06))
@@ -563,12 +621,23 @@ fn render_footer(items: Signal<Vec<ReminderItem>>) -> impl IntoElement {
             .text_size(px(11.0))
             .text_color(white().alpha(0.45)),
         )
+        .child(
+            when(
+                move || opacity.get() < 0.99,
+                move || {
+                    text(move || format!("不透明度 {:.0}%", opacity.get() * 100.0))
+                        .text_size(px(10.5))
+                        .text_color(hsl(45.0, 85.0, 60.0).alpha(0.80))
+                },
+            ),
+        )
 }
 
-/// 设置与添加新提醒抽屉（点击齿轮展开）
+/// 设置与添加新提醒抽屉（点击齿轮展开，支持基于 NSH 原生 Slider 的窗口不透明度调节与快捷添加提醒项）
 fn render_drawer(
     show: Signal<bool>,
     items: Signal<Vec<ReminderItem>>,
+    opacity: Signal<f32>,
 ) -> impl IntoElement {
     when(
         move || show.get(),
@@ -581,6 +650,84 @@ fn render_drawer(
                 .bg(white().alpha(0.06))
                 .flex_col()
                 .gap(px(6.0))
+                // 1. 窗口不透明度调节区 (纯粹专注的 NSH 官方原生 slider 组件)
+                .child(
+                    view()
+                        .flex_col()
+                        .gap(px(4.0))
+                        // 第一行：标题 + 当前数值百分比徽章 (100% = 完全不透明)
+                        .child(
+                            view()
+                                .flex_row()
+                                .items_center()
+                                .justify_between()
+                                .child(
+                                    view()
+                                        .flex_row()
+                                        .items_center()
+                                        .gap(px(6.0))
+                                        .child(icons::icon_svg(
+                                            icons::ICON_OPACITY,
+                                            12.0,
+                                            hsl(45.0, 85.0, 60.0),
+                                        ))
+                                        .child(
+                                            text("窗口不透明度")
+                                                .text_size(px(11.5))
+                                                .text_color(white().alpha(0.85)),
+                                        ),
+                                )
+                                .child(
+                                    view()
+                                        .px(px(6.0))
+                                        .py(px(1.5))
+                                        .rounded(px(4.0))
+                                        .bg(white().alpha(0.06))
+                                        .child(
+                                            text(move || format!("{:.0}%", opacity.get() * 100.0))
+                                                .text_size(px(11.0))
+                                                .text_color(hsl(45.0, 90.0, 62.0)),
+                                        ),
+                                ),
+                        )
+                        // 第二行：NSH 官方原生 slider() 滑块组件，平滑无级拖拽与键盘方向键微调
+                        .child(
+                            view()
+                                .w_full()
+                                .px(px(2.0))
+                                .child(
+                                    slider()
+                                        .min(20.0)
+                                        .max(100.0)
+                                        .step(1.0)
+                                        .value(move || SliderValue::Single((opacity.get() * 100.0).round() as f64))
+                                        .on_change(move |v: &SliderValue| {
+                                            let pct = (v.start() / 100.0) as f32;
+                                            opacity.set(pct.clamp(0.20, 1.0));
+                                        })
+                                        .accessibility_label("窗口不透明度")
+                                        .track_style(|s| s.w_full().h(px(20.0)).justify_center())
+                                        .indicator_style(|s| s.h(px(4.0)).rounded_full().bg(white().alpha(0.15)))
+                                        .range_style(|s| s.rounded_full().bg(hsl(45.0, 90.0, 60.0)))
+                                        .thumb_style(|s| {
+                                            s.size(px(13.0))
+                                                .rounded_full()
+                                                .bg(white())
+                                                .border_1()
+                                                .border_color(hsl(45.0, 90.0, 60.0))
+                                        }),
+                                ),
+                        ),
+                )
+                // 细分割线
+                .child(
+                    view()
+                        .w_full()
+                        .my(px(2.0))
+                        .border_t_1()
+                        .border_color(white().alpha(0.08)),
+                )
+                // 2. 快捷添加预设提醒区
                 .child(
                     text("点击快捷添加通用提醒：")
                         .text_size(px(11.0))
@@ -620,4 +767,48 @@ fn render_drawer(
                 )
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_window_height_calculation() {
+        // 0 项且未展开抽屉
+        let h0 = calculate_window_height(0, false);
+        assert_eq!(h0, 195.0); // 102.0 clamp 最小 195.0
+
+        // 3 项未展开抽屉
+        let h3 = calculate_window_height(3, false);
+        assert_eq!(h3, BASE_CONTENT_HEIGHT + 3.0 * ITEM_ROW_HEIGHT);
+
+        // 3 项展开抽屉（包含 180.0 抽屉高度）
+        let h3_open = calculate_window_height(3, true);
+        assert_eq!(h3_open, BASE_CONTENT_HEIGHT + 3.0 * ITEM_ROW_HEIGHT + DRAWER_HEIGHT);
+        assert!(h3_open > h3);
+
+        // 超多项 clamp 最大值 560.0
+        let h_many = calculate_window_height(20, true);
+        assert_eq!(h_many, 560.0);
+    }
+
+    #[test]
+    fn test_opacity_clamp_range() {
+        let clamp_op = |v: f32| v.clamp(0.20, 1.0);
+        assert_eq!(clamp_op(0.0), 0.20);
+        assert_eq!(clamp_op(0.15), 0.20);
+        assert_eq!(clamp_op(0.85), 0.85);
+        assert_eq!(clamp_op(1.0), 1.0);
+        assert_eq!(clamp_op(1.5), 1.0);
+    }
+
+    #[test]
+    fn test_apply_window_opacity() {
+        apply_window_opacity(1.0);
+        apply_window_opacity(0.85);
+        apply_window_opacity(0.50);
+        apply_window_opacity(0.10); // 会自动 clamp 到 0.20
+        apply_window_opacity(1.50); // 会自动 clamp 到 1.00
+    }
 }
