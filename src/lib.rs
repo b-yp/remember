@@ -15,6 +15,8 @@ use theme_mode::{ThemeMode, ACCENT_GOLD, ACCENT_GOLD_BG};
 
 #[cfg(target_os = "windows")]
 use nsh_platform_windows as platform;
+#[cfg(target_os = "macos")]
+use nsh_platform_macos as platform;
 
 #[cfg(target_os = "windows")]
 static APP_HWND: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
@@ -50,10 +52,29 @@ pub fn set_native_window_opacity(opacity: f32) {
     }
 }
 
+/// 设置 macOS 原生窗口透明度
+#[cfg(target_os = "macos")]
+pub fn set_native_window_opacity(opacity: f32) {
+    let opacity = opacity.clamp(0.20, 1.0);
+    dispatch2::DispatchQueue::main().exec_async(move || {
+        use platform::objc2::MainThreadMarker;
+        use platform::objc2_app_kit::NSApplication;
+        if let Some(mtm) = MainThreadMarker::new() {
+            let app = NSApplication::sharedApplication(mtm);
+            for window in app.windows().iter() {
+                window.setAlphaValue(opacity as f64);
+            }
+        }
+    });
+}
+
 /// 跨平台透明度应用接口
 pub fn apply_window_opacity(opacity: f32) {
     #[cfg(target_os = "windows")]
     set_native_window_opacity(opacity);
+    #[cfg(target_os = "macos")]
+    set_native_window_opacity(opacity);
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     let _ = opacity;
 }
 
@@ -81,6 +102,64 @@ pub fn set_native_dark_mode(dark: bool) {
 
 #[cfg(not(target_os = "windows"))]
 pub fn set_native_dark_mode(_dark: bool) {}
+
+/// macOS 挂件专用配置：在主线程剥离窗口边框、隐藏交通灯并启用透明底色与阴影
+#[cfg(target_os = "macos")]
+fn configure_macos_window() {
+    use platform::objc2::MainThreadMarker;
+    use platform::objc2_app_kit::{
+        NSApplication, NSColor, NSWindowButton, NSWindowStyleMask, NSWindowTitleVisibility,
+    };
+
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let app = NSApplication::sharedApplication(mtm);
+    for window in app.windows().iter() {
+        // 1. 设置内容充满整个窗口区域 (FullSizeContentView)，隐藏系统标题栏与文字
+        let mut mask = window.styleMask();
+        mask |= NSWindowStyleMask::FullSizeContentView;
+        mask &= !NSWindowStyleMask::Resizable;
+        window.setStyleMask(mask);
+
+        window.setTitleVisibility(NSWindowTitleVisibility::Hidden);
+        window.setTitlebarAppearsTransparent(true);
+
+        // 2. 彻底隐藏红绿灯控制按钮（关闭、最小化、缩放）
+        if let Some(btn) = window.standardWindowButton(NSWindowButton::CloseButton) {
+            btn.setHidden(true);
+        }
+        if let Some(btn) = window.standardWindowButton(NSWindowButton::MiniaturizeButton) {
+            btn.setHidden(true);
+        }
+        if let Some(btn) = window.standardWindowButton(NSWindowButton::ZoomButton) {
+            btn.setHidden(true);
+        }
+
+        // 3. 设置窗口底层为 100% 透明，彻底剥离 macOS 默认窗口灰色背景与边框
+        window.setOpaque(false);
+        window.setBackgroundColor(Some(&NSColor::clearColor()));
+
+        // 4. 启用原生系统阴影与背景随意拖拽
+        window.setHasShadow(true);
+        window.setMovableByWindowBackground(true);
+        window.invalidateShadow();
+    }
+}
+
+/// macOS 挂件专用：配置为纯净无边框悬浮卡片，移除全部系统控制按钮与标题栏非客户区，保留原生圆角与阴影
+#[cfg(target_os = "macos")]
+fn setup_floating_window() {
+    dispatch2::DispatchQueue::main().exec_async(configure_macos_window);
+
+    // 在主线程启动并渲染前几个周期内再次确认配置，确保覆盖 AppKit 任何后续重置
+    std::thread::spawn(|| {
+        for delay in [30, 80, 200, 500] {
+            std::thread::sleep(std::time::Duration::from_millis(delay));
+            dispatch2::DispatchQueue::main().exec_async(configure_macos_window);
+        }
+    });
+}
 
 /// Windows 挂件专用：配置为纯净无边框悬浮卡片，移除全部系统按钮与非客户区，保留 Win11 硬件圆角与阴影
 #[cfg(target_os = "windows")]
@@ -224,8 +303,8 @@ const PRESETS: &[PresetReminder] = &[
 /// 应用程序根组件
 #[component]
 pub fn App() -> impl IntoElement {
-    // 1. Windows 挂件专用：配置为纯净无边框悬浮卡片，彻底剔除原生系统标题栏与系统控制三键
-    #[cfg(target_os = "windows")]
+    // 1. 挂件专用配置：在 Windows 与 macOS 上彻底剥离系统标题栏、边框与控制按钮，呈现纯净无边框悬浮卡片
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     setup_floating_window();
 
     // 2. 窗口原生桌面属性：置顶悬浮 (Floating)

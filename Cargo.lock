@@ -1819,6 +1819,7 @@ dependencies = [
 name = "nsh-app-reminder"
 version = "0.1.0"
 dependencies = [
+ "dispatch2",
  "env_logger",
  "notify-rust",
  "nsh-base",
