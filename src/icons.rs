@@ -156,6 +156,9 @@ pub const ICON_CHEVRON_DOWN: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" v
 /// 自定义配置 / 铅笔编辑（Edit / Custom）
 pub const ICON_EDIT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4l10.5 -10.5a2.828 2.828 0 1 0 -4 -4l-10.5 10.5v4" /><path d="M13.5 6.5l4 4" /></svg>"#;
 
+/// 常用推荐 / 星标推荐（Star / Recommendation）
+pub const ICON_STAR: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" /></svg>"#;
+
 
 /// 根据标识获取对应 SVG
 pub fn get_icon_markup(icon_key: &str) -> &'static str {
@@ -176,6 +179,7 @@ pub fn get_icon_markup(icon_key: &str) -> &'static str {
         "apple" | "fruit" | "food" => ICON_APPLE,
         "toilet" | "poop" => ICON_TOILET,
         "bell" | "alarm" => ICON_BELL,
+        "star" | "recommend" => ICON_STAR,
         _ => ICON_BELL,
     }
 }
@@ -199,6 +203,7 @@ pub fn get_item_color(icon_key: &str) -> &'static str {
         "apple" | "fruit" | "food" => "#4ade80",  // 健康嫩绿（健康轻食）
         "toilet" | "poop" => "#fbbf24",           // 暖金琥珀（带薪拉屎）
         "bell" | "alarm" => "#eab308",            // 醒目金黄（通用提醒）
+        "star" | "recommend" => "#f59e0b",        // 璀璨星标（推荐项目）
         _ => "#38bdf8",
     }
 }
@@ -222,6 +227,7 @@ pub fn get_item_hsla(icon_key: &str) -> Hsla {
         "apple" | "fruit" | "food" => hsl(142.0, 71.0, 58.0),
         "toilet" | "poop" => hsl(43.0, 96.0, 56.0),
         "bell" | "alarm" => hsl(48.0, 96.0, 48.0),
+        "star" | "recommend" => hsl(45.0, 95.0, 58.0),
         _ => hsl(48.0, 96.0, 48.0),
     }
 }

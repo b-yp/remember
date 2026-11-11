@@ -134,22 +134,31 @@ fn setup_floating_window() {
 pub const WINDOW_WIDTH: f32 = 320.0;
 pub const BASE_CONTENT_HEIGHT: f32 = 102.0; // padding (28) + header (30) + footer (22) + gaps (22)
 pub const ITEM_ROW_HEIGHT: f32 = 46.0;
-pub const DRAWER_BASE_HEIGHT: f32 = 138.0;
+pub const DRAWER_BASE_HEIGHT: f32 = 126.0;
+pub const DRAWER_PRESETS_HEIGHT: f32 = 112.0;
 pub const DRAWER_CUSTOM_HEIGHT: f32 = 208.0;
 
-/// 根据提醒项目数量、设置抽屉展开状态以及自定义表单展开状态精确计算窗口高度
-pub fn calculate_window_height(item_count: usize, is_drawer_open: bool, is_custom_open: bool) -> f32 {
+/// 根据提醒项目数量、设置抽屉展开状态、常用推荐展开状态以及自定义表单展开状态精确计算窗口高度
+pub fn calculate_window_height(
+    item_count: usize,
+    is_drawer_open: bool,
+    is_presets_open: bool,
+    is_custom_open: bool,
+) -> f32 {
     let items_h = item_count as f32 * ITEM_ROW_HEIGHT;
     let drawer_h = if is_drawer_open {
-        if is_custom_open {
-            DRAWER_BASE_HEIGHT + DRAWER_CUSTOM_HEIGHT
-        } else {
-            DRAWER_BASE_HEIGHT
+        let mut h = DRAWER_BASE_HEIGHT;
+        if is_presets_open {
+            h += DRAWER_PRESETS_HEIGHT;
         }
+        if is_custom_open {
+            h += DRAWER_CUSTOM_HEIGHT;
+        }
+        h
     } else {
         0.0
     };
-    (BASE_CONTENT_HEIGHT + items_h + drawer_h).clamp(195.0, 680.0)
+    (BASE_CONTENT_HEIGHT + items_h + drawer_h).clamp(195.0, 720.0)
 }
 
 /// 触发倒计时到期提醒（声音、系统原生通知、窗口置顶唤起）
@@ -200,8 +209,7 @@ const PRESETS: &[PresetReminder] = &[
     PresetReminder { name: "护眼远眺", icon_key: "eye", minutes: 20 },
     PresetReminder { name: "番茄专注", icon_key: "clock", minutes: 25 },
     PresetReminder { name: "带薪拉屎", icon_key: "toilet", minutes: 90 },
-    PresetReminder { name: "补充用药", icon_key: "pill", minutes: 240 },
-    PresetReminder { name: "站立拉伸", icon_key: "bell", minutes: 60 },
+    PresetReminder { name: "站立拉伸", icon_key: "activity", minutes: 60 },
 ];
 
 /// 应用程序根组件
@@ -227,6 +235,7 @@ pub fn App() -> impl IntoElement {
     // 全局暂停状态与设置面板展开状态，以及窗口不透明度状态 (0.2 ~ 1.0)
     let is_all_paused = signal(false);
     let show_settings = signal(false);
+    let show_presets = signal(false);
     let show_custom_form = signal(false);
     let opacity = signal(1.0_f32);
 
@@ -239,9 +248,10 @@ pub fn App() -> impl IntoElement {
     // 窗口高度动态自适应：点击设置抽屉或增减提醒项时动态调节高度，并支持平滑滚动，杜绝遮挡
     effect(move || {
         let is_open = show_settings.get();
+        let is_presets = show_presets.get();
         let is_custom = show_custom_form.get();
         let count = items.get().len();
-        let target_h = calculate_window_height(count, is_open, is_custom);
+        let target_h = calculate_window_height(count, is_open, is_presets, is_custom);
 
         desktop::set_frame(WindowFrame {
             width: Some(px(WINDOW_WIDTH)),
@@ -283,7 +293,7 @@ pub fn App() -> impl IntoElement {
         // 1. 顶栏：通用「reminder 提醒」金黄微标与标题，右侧挂件操作按钮组（暂停、设置、关闭）
         .child(render_header(items, is_all_paused, show_settings))
         // 2. 新建/设置抽屉（点击顶部设置/新建时平滑展开，窗口自动变大，支持不透明度调节与快捷提醒添加）
-        .child(render_drawer(show_settings, show_custom_form, items, opacity))
+        .child(render_drawer(show_settings, show_presets, show_custom_form, items, opacity))
         // 3. 核心提醒列表（基于 each 响应式驱动更新与增减）
         .child(render_items(items))
         // 4. 底部状态行（通用统计：「进行中 X 项 · 今日打卡 Y 次」，若处于半透明状态则额外指示不透明度）
@@ -684,9 +694,112 @@ fn render_footer(items: Signal<Vec<ReminderItem>>, opacity: Signal<f32>) -> impl
         )
 }
 
+/// 渲染单个常用推荐预设卡片（精致卡片、无勾选、清晰时间标识、单例防重）
+fn render_preset_card(
+    preset: &'static PresetReminder,
+    items: Signal<Vec<ReminderItem>>,
+) -> impl IntoElement {
+    let name = preset.name;
+    let icon = preset.icon_key;
+    let mins = preset.minutes;
+
+    view()
+        .flex_1()
+        .px(px(7.0))
+        .py(px(5.0))
+        .rounded(px(5.0))
+        .bg(move || {
+            let running = items.get().iter().any(|x| x.name == name);
+            if running {
+                hsl(145.0, 50.0, 20.0).alpha(0.35)
+            } else {
+                white().alpha(0.04)
+            }
+        })
+        .border_1()
+        .border_color(move || {
+            let running = items.get().iter().any(|x| x.name == name);
+            if running {
+                hsl(145.0, 60.0, 45.0).alpha(0.40)
+            } else {
+                white().alpha(0.07)
+            }
+        })
+        .active(|s| s.opacity(0.6))
+        .on_press(move || {
+            let running = items.get().iter().any(|x| x.name == name);
+            if !running {
+                items.update(|list| {
+                    list.push(ReminderItem::new(
+                        name,
+                        icon,
+                        mins * 60,
+                    ));
+                });
+            }
+        })
+        .flex_row()
+        .items_center()
+        .justify_between()
+        // 左侧：对应矢量图标 + 预设名称（无任何对钩，干净对齐）
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .gap(px(5.0))
+                .child(
+                    icons::icon_svg(
+                        icons::get_icon_markup(icon),
+                        12.0,
+                        icons::get_item_hsla(icon),
+                    ),
+                )
+                .child(
+                    text(name)
+                        .text_size(px(10.5))
+                        .text_color(move || {
+                            let running = items.get().iter().any(|x| x.name == name);
+                            if running {
+                                hsl(145.0, 75.0, 75.0)
+                            } else {
+                                white().alpha(0.85)
+                            }
+                        }),
+                ),
+        )
+        // 右侧：时长徽章（如 30m / 45m，运行中呈现清新激活绿色）
+        .child(
+            view()
+                .px(px(4.0))
+                .py(px(1.0))
+                .rounded(px(3.0))
+                .bg(move || {
+                    let running = items.get().iter().any(|x| x.name == name);
+                    if running {
+                        hsl(145.0, 60.0, 30.0).alpha(0.35)
+                    } else {
+                        white().alpha(0.06)
+                    }
+                })
+                .child(
+                    text(format!("{}m", mins))
+                        .text_size(px(9.5))
+                        .text_color(move || {
+                            let running = items.get().iter().any(|x| x.name == name);
+                            if running {
+                                hsl(145.0, 70.0, 70.0)
+                            } else {
+                                white().alpha(0.40)
+                            }
+                        }),
+                ),
+        )
+}
+
 /// 设置与添加新提醒抽屉（点击齿轮展开，支持窗口不透明度调节、推荐快速开启与优雅折叠的自定义新提醒）
 fn render_drawer(
     show: Signal<bool>,
+    show_presets: Signal<bool>,
     show_custom_form: Signal<bool>,
     items: Signal<Vec<ReminderItem>>,
     opacity: Signal<f32>,
@@ -784,79 +897,104 @@ fn render_drawer(
                         .border_t_1()
                         .border_color(white().alpha(0.08)),
                 )
-                // 2. 常用推荐快速开启（单例防重：已在运行的显示微勾选，不重复添加）
+                // 2. 基于 Collapsible 的常用推荐区域：支持平滑折叠，预设 6 项精炼对称双列卡片排版
                 .child(
-                    view()
-                        .flex_col()
-                        .gap(px(4.0))
-                        .child(
-                            text("常用推荐（单例开启，不重复添加）：")
-                                .text_size(px(11.0))
-                                .text_color(white().alpha(0.50)),
-                        )
+                    collapsible()
+                        .open(show_presets)
+                        .reveal(true)
+                        // Trigger: 常用推荐折叠栏触发条
                         .child(
                             view()
+                                .w_full()
+                                .px(px(8.0))
+                                .py(px(4.0))
+                                .rounded(px(5.0))
+                                .bg(move || {
+                                    if show_presets.get() {
+                                        white().alpha(0.09)
+                                    } else {
+                                        white().alpha(0.04)
+                                    }
+                                })
+                                .border_1()
+                                .border_color(move || {
+                                    if show_presets.get() {
+                                        hsl(45.0, 90.0, 60.0).alpha(0.35)
+                                    } else {
+                                        white().alpha(0.06)
+                                    }
+                                })
+                                .active(|s| s.opacity(0.6))
+                                .on_press(move || show_presets.update(|v| *v = !*v))
                                 .flex_row()
-                                .flex_wrap()
-                                .gap(px(4.0))
-                                .children(PRESETS.iter().map(|preset| {
-                                    let preset_name = preset.name;
-                                    let preset_icon = preset.icon_key;
-                                    let preset_mins = preset.minutes;
-
+                                .items_center()
+                                .justify_between()
+                                .child(
                                     view()
-                                        .px(px(6.0))
-                                        .py(px(2.5))
-                                        .rounded(px(5.0))
-                                        .bg(move || {
-                                            let running = items.get().iter().any(|x| x.name == preset_name);
-                                            if running {
-                                                hsl(145.0, 60.0, 25.0).alpha(0.35)
-                                            } else {
-                                                white().alpha(0.08)
-                                            }
-                                        })
-                                        .border_1()
-                                        .border_color(move || {
-                                            let running = items.get().iter().any(|x| x.name == preset_name);
-                                            if running {
-                                                hsl(145.0, 70.0, 45.0).alpha(0.40)
-                                            } else {
-                                                white().alpha(0.08)
-                                            }
-                                        })
-                                        .active(|s| s.opacity(0.6))
-                                        .on_press(move || {
-                                            let running = items.get().iter().any(|x| x.name == preset_name);
-                                            if !running {
-                                                items.update(|list| {
-                                                    list.push(ReminderItem::new(
-                                                        preset_name,
-                                                        preset_icon,
-                                                        preset_mins * 60,
-                                                    ));
-                                                });
-                                            }
-                                        })
+                                        .flex_row()
+                                        .items_center()
+                                        .gap(px(5.0))
+                                        .child(icons::icon_svg(
+                                            icons::ICON_STAR,
+                                            11.5,
+                                            hsl(45.0, 90.0, 62.0),
+                                        ))
                                         .child(
-                                            text(move || {
-                                                let running = items.get().iter().any(|x| x.name == preset_name);
-                                                if running {
-                                                    format!("✓ {} ({}m)", preset_name, preset_mins)
-                                                } else {
-                                                    format!("{} ({}m)", preset_name, preset_mins)
-                                                }
-                                            })
-                                            .text_size(px(10.5))
-                                            .text_color(move || {
-                                                let running = items.get().iter().any(|x| x.name == preset_name);
-                                                if running {
-                                                    hsl(145.0, 75.0, 72.0)
-                                                } else {
-                                                    white().alpha(0.85)
-                                                }
-                                            }),
+                                            text("常用推荐")
+                                                .text_size(px(11.0))
+                                                .text_color(hsl(45.0, 90.0, 65.0)),
                                         )
+                                        .child(
+                                            text("(6项预设)")
+                                                .text_size(px(10.0))
+                                                .text_color(white().alpha(0.40)),
+                                        ),
+                                )
+                                .child(
+                                    view()
+                                        .flex_row()
+                                        .items_center()
+                                        .gap(px(3.0))
+                                        .child(
+                                            text(move || if show_presets.get() { "收起" } else { "展开" })
+                                                .text_size(px(10.5))
+                                                .text_color(white().alpha(0.45)),
+                                        )
+                                        .child(
+                                            icons::dynamic_icon_svg(
+                                                move || {
+                                                    if show_presets.get() {
+                                                        icons::ICON_CHEVRON_UP
+                                                    } else {
+                                                        icons::ICON_CHEVRON_DOWN
+                                                    }
+                                                },
+                                                11.0,
+                                                white().alpha(0.45),
+                                            ),
+                                        ),
+                                ),
+                        )
+                        // Content: 展开后的 6 项 2列x3行 对称精炼卡片面板
+                        .content(
+                            view()
+                                .w_full()
+                                .mt(px(4.0))
+                                .p(px(6.0))
+                                .rounded(px(6.0))
+                                .bg(hsl(225.0, 10.0, 12.0))
+                                .border_1()
+                                .border_color(white().alpha(0.08))
+                                .flex_col()
+                                .gap(px(4.5))
+                                .children(PRESETS.chunks(2).map(|pair| {
+                                    view()
+                                        .w_full()
+                                        .flex_row()
+                                        .gap(px(4.5))
+                                        .children(pair.iter().map(|preset| {
+                                            render_preset_card(preset, items)
+                                        }))
                                 })),
                         ),
                 )
@@ -1334,26 +1472,36 @@ mod tests {
     #[test]
     fn test_window_height_calculation() {
         // 0 项且未展开抽屉
-        let h0 = calculate_window_height(0, false, false);
+        let h0 = calculate_window_height(0, false, false, false);
         assert_eq!(h0, 195.0); // 102.0 clamp 最小 195.0
 
         // 3 项未展开抽屉
-        let h3 = calculate_window_height(3, false, false);
+        let h3 = calculate_window_height(3, false, false, false);
         assert_eq!(h3, BASE_CONTENT_HEIGHT + 3.0 * ITEM_ROW_HEIGHT);
 
-        // 3 项展开基础抽屉（未展开自定义表单）
-        let h3_drawer = calculate_window_height(3, true, false);
+        // 3 项展开基础抽屉（未展开常用推荐与自定义表单）
+        let h3_drawer = calculate_window_height(3, true, false, false);
         assert_eq!(h3_drawer, BASE_CONTENT_HEIGHT + 3.0 * ITEM_ROW_HEIGHT + DRAWER_BASE_HEIGHT);
         assert!(h3_drawer > h3);
 
-        // 3 项展开抽屉且展开自定义表单
-        let h3_custom = calculate_window_height(3, true, true);
-        assert_eq!(h3_custom, BASE_CONTENT_HEIGHT + 3.0 * ITEM_ROW_HEIGHT + DRAWER_BASE_HEIGHT + DRAWER_CUSTOM_HEIGHT);
-        assert!(h3_custom > h3_drawer);
+        // 3 项展开抽屉且展开常用推荐（未展开自定义表单）
+        let h3_presets = calculate_window_height(3, true, true, false);
+        assert_eq!(h3_presets, BASE_CONTENT_HEIGHT + 3.0 * ITEM_ROW_HEIGHT + DRAWER_BASE_HEIGHT + DRAWER_PRESETS_HEIGHT);
+        assert!(h3_presets > h3_drawer);
 
-        // 超多项 clamp 最大值 680.0
-        let h_many = calculate_window_height(20, true, true);
-        assert_eq!(h_many, 680.0);
+        // 3 项展开抽屉且展开自定义表单（未展开常用推荐）
+        let h3_custom = calculate_window_height(3, true, false, true);
+        assert_eq!(h3_custom, BASE_CONTENT_HEIGHT + 3.0 * ITEM_ROW_HEIGHT + DRAWER_BASE_HEIGHT + DRAWER_CUSTOM_HEIGHT);
+        assert!(h3_custom > h3_presets);
+
+        // 3 项展开抽屉且两者均展开
+        let h3_both = calculate_window_height(3, true, true, true);
+        assert_eq!(h3_both, BASE_CONTENT_HEIGHT + 3.0 * ITEM_ROW_HEIGHT + DRAWER_BASE_HEIGHT + DRAWER_PRESETS_HEIGHT + DRAWER_CUSTOM_HEIGHT);
+        assert!(h3_both > h3_custom);
+
+        // 超多项 clamp 最大值 720.0
+        let h_many = calculate_window_height(20, true, true, true);
+        assert_eq!(h_many, 720.0);
     }
 
     #[test]
