@@ -37,14 +37,8 @@ where
         )
 }
 
-/// 生成带有彩色圆环进度条和居中矢量图标的完整 SVG markup
-/// 外层背景环轨采用 stroke="currentColor" stroke-opacity="0.12"，原生自适应任何明暗主题
-pub fn ring_progress_svg(icon_key: &str, progress: f32, color_hex: &str) -> String {
-    let circumference = 87.964_f32; // 2 * PI * 14
-    let progress = progress.clamp(0.01, 1.0);
-    let offset = circumference * (1.0 - progress);
-
-    let inner_paths = match icon_key {
+fn get_icon_inner_paths(icon_key: &str) -> &'static str {
+    match icon_key {
         "droplet" | "water" => r#"<path d="M6.8 11a6 6 0 1 0 10.396 0l-5.196 -8l-5.2 8z" /><path d="M6 14a6 6 0 0 0 6 6" />"#,
         "coffee" | "tea" => r#"<path d="M3 14c0 2.76 2.24 5 5 5h4c2.76 0 5 -2.24 5 -5v-3H3v3z" /><path d="M17 9h1a3 3 0 0 1 3 3v1a3 3 0 0 1 -3 3h-1" /><path d="M6 2v2" /><path d="M10 2v2" /><path d="M14 2v2" />"#,
         "walk" | "step" => r#"<path d="M13 4a1 1 0 1 0 2 0a1 1 0 0 0 -2 0" /><path d="M7 21l3 -4" /><path d="M16 21l-2 -4l-3 -3l1 -6" /><path d="M6 12l2 -3l4 -1l3 3l3 1" />"#,
@@ -62,10 +56,31 @@ pub fn ring_progress_svg(icon_key: &str, progress: f32, color_hex: &str) -> Stri
         "toilet" | "poop" => r#"<path d="M10 12h4v7a3 3 0 0 1 -3 3h-2a3 3 0 0 1 -3 -3v-7h4z" /><path d="M6 4h12a1 1 0 0 1 1 1v3a1 1 0 0 1 -1 1h-12a1 1 0 0 1 -1 -1v-3a1 1 0 0 1 1 -1z" /><path d="M10 9v3" /><path d="M14 9v3" />"#,
         "bell" | "alarm" => r#"<path d="M10 5a2 2 0 0 1 4 0a7 7 0 0 1 4 6v3a4 4 0 0 0 2 3h-16a4 4 0 0 0 2 -3v-3a7 7 0 0 1 4 -6" /><path d="M9 17v1a3 3 0 0 0 6 0v-1" />"#,
         _ => r#"<path d="M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0 -18 0" /><path d="M12 7v5l3 3" />"#,
-    };
+    }
+}
+
+/// 生成带有彩色圆环进度条和居中矢量图标的完整 SVG markup
+/// 外层背景环轨采用 stroke="currentColor" stroke-opacity="0.12"，原生自适应任何明暗主题
+pub fn ring_progress_svg(icon_key: &str, progress: f32, color_hex: &str) -> String {
+    let circumference = 87.964_f32; // 2 * PI * 14
+    let progress = progress.clamp(0.01, 1.0);
+    let offset = circumference * (1.0 - progress);
+    let inner_paths = get_icon_inner_paths(icon_key);
 
     format!(
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 36 36"><circle cx="18" cy="18" r="14" fill="none" stroke="currentColor" stroke-opacity="0.12" stroke-width="2.5" /><circle cx="18" cy="18" r="14" fill="none" stroke="{color_hex}" stroke-width="2.5" stroke-dasharray="{circumference:.2}" stroke-dashoffset="{offset:.2}" stroke-linecap="round" transform="rotate(-90 18 18)" /><g transform="translate(10, 10) scale(0.666)" stroke="{color_hex}" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">{inner_paths}</g></svg>"#
+    )
+}
+
+/// 生成适用于迷你胶囊的微型发光圆环进度图标（28x28 视口）
+pub fn mini_ring_progress_svg(icon_key: &str, progress: f32, color_hex: &str) -> String {
+    let circumference = 87.964_f32; // 2 * PI * 14
+    let progress = progress.clamp(0.01, 1.0);
+    let offset = circumference * (1.0 - progress);
+    let inner_paths = get_icon_inner_paths(icon_key);
+
+    format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 36 36"><circle cx="18" cy="18" r="14" fill="none" stroke="currentColor" stroke-opacity="0.12" stroke-width="2.8" /><circle cx="18" cy="18" r="14" fill="none" stroke="{color_hex}" stroke-width="2.8" stroke-dasharray="{circumference:.2}" stroke-dashoffset="{offset:.2}" stroke-linecap="round" transform="rotate(-90 18 18)" /><g transform="translate(10, 10) scale(0.666)" stroke="{color_hex}" fill="none" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">{inner_paths}</g></svg>"#
     )
 }
 
@@ -154,6 +169,12 @@ pub const ICON_CHEVRON_UP: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" vie
 /// 展开指示箭头（Chevron Down）
 pub const ICON_CHEVRON_DOWN: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6l6 -6" /></svg>"#;
 
+/// 收缩为迷你胶囊（Minimize to Pill）
+pub const ICON_MINIMIZE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14h6v6" /><path d="M10 14l-7 7" /><path d="M20 10h-6v-6" /><path d="M14 10l7 -7" /></svg>"#;
+
+/// 展开为完整卡片（Expand to Full Card）
+pub const ICON_EXPAND: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 4h4v4" /><path d="M14 10l6 -6" /><path d="M8 20h-4v-4" /><path d="M10 14l-6 6" /></svg>"#;
+
 /// 自定义配置 / 铅笔编辑（Edit / Custom）
 pub const ICON_EDIT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4l10.5 -10.5a2.828 2.828 0 1 0 -4 -4l-10.5 10.5v4" /><path d="M13.5 6.5l4 4" /></svg>"#;
 
@@ -241,6 +262,14 @@ mod tests {
     fn test_ring_progress_svg() {
         let svg_str = ring_progress_svg("droplet", 0.5, "#38bdf8");
         assert!(svg_str.contains("stroke=\"currentColor\""));
+        assert!(svg_str.contains("#38bdf8"));
+    }
+
+    #[test]
+    fn test_mini_ring_progress_svg() {
+        let svg_str = mini_ring_progress_svg("droplet", 0.75, "#38bdf8");
+        assert!(svg_str.contains("width=\"28\""));
+        assert!(svg_str.contains("height=\"28\""));
         assert!(svg_str.contains("#38bdf8"));
     }
 

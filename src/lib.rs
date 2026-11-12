@@ -248,6 +248,9 @@ fn setup_floating_window() {
 /// 统一窗口尺寸规范（逻辑像素，自动由 NSH 处理 High-DPI 缩放，杜绝模糊与尺寸割裂）
 pub const WINDOW_WIDTH: f32 = 320.0;
 pub const WINDOW_HEIGHT: f32 = 350.0;
+/// 迷你胶囊形态尺寸（极简悬浮小药丸，仅占用极少屏幕空间）
+pub const MINI_WIDTH: f32 = 196.0;
+pub const MINI_HEIGHT: f32 = 44.0;
 
 /// 触发倒计时到期提醒（声音、系统原生通知、窗口置顶唤起）
 pub fn trigger_reminder_alarm(item_name: &str) {
@@ -365,6 +368,27 @@ pub fn App() -> impl IntoElement {
         }
     })));
 
+    let is_mini = signal(false);
+
+    let enter_mini = move || {
+        is_mini.set(true);
+        show_settings.set(false);
+        desktop::set_frame(WindowFrame {
+            width: Some(px(MINI_WIDTH)),
+            height: Some(px(MINI_HEIGHT)),
+            ..Default::default()
+        });
+    };
+
+    let enter_full = move || {
+        is_mini.set(false);
+        desktop::set_frame(WindowFrame {
+            width: Some(px(WINDOW_WIDTH)),
+            height: Some(px(WINDOW_HEIGHT)),
+            ..Default::default()
+        });
+    };
+
     // 根视图容器：基于 NSH 官方 theme().card 与 theme().border，原生自适应明暗，支持随意拖拽
     // Windows 下由 Win11 DWM 硬件级圆角与边框 (DWMWCP_ROUND) 托管裁剪与边框阴影，
     // 若在根视图重复叠加 rounded 与 border 会因曲率不一致产生四角双层重影，故仅在非 Windows (如 macOS) 应用视图层圆角边框。
@@ -372,10 +396,7 @@ pub fn App() -> impl IntoElement {
         .window_drag(true) // 按住卡片空白处即可随意拖动窗口
         .w_full()
         .h_full()
-        .bg(move || theme().card)
-        .p(px(14.0))
-        .flex_col()
-        .justify_between();
+        .bg(move || theme().card);
 
     #[cfg(not(target_os = "windows"))]
     let root = root
@@ -383,9 +404,45 @@ pub fn App() -> impl IntoElement {
         .border_color(move || theme().border)
         .rounded(px(12.0));
 
-    root
-        // 1. 顶栏：通用「reminder 提醒」金黄微标与标题，右侧挂件操作按钮组（暂停、设置、关闭）
-        .child(render_header(items, is_all_paused, show_settings))
+    root.child(
+        when(
+            move || is_mini.get(),
+            move || render_mini_capsule(items, is_all_paused, enter_full),
+        )
+        .otherwise(move || {
+            render_full_card(
+                items,
+                is_all_paused,
+                show_settings,
+                show_presets,
+                show_custom_form,
+                opacity,
+                theme_mode,
+                enter_mini,
+            )
+        }),
+    )
+}
+
+/// 完整卡片视图形态（320x350 像素，包含顶栏、核心滚动区与底部统计）
+fn render_full_card(
+    items: Signal<Vec<ReminderItem>>,
+    is_all_paused: Signal<bool>,
+    show_settings: Signal<bool>,
+    show_presets: Signal<bool>,
+    show_custom_form: Signal<bool>,
+    opacity: Signal<f32>,
+    theme_mode: Signal<ThemeMode>,
+    on_enter_mini: impl Fn() + Copy + 'static,
+) -> impl IntoElement {
+    view()
+        .w_full()
+        .h_full()
+        .p(px(14.0))
+        .flex_col()
+        .justify_between()
+        // 1. 顶栏：通用「reminder 提醒」金黄微标与标题，右侧挂件操作按钮组（暂停、设置、收起胶囊、关闭）
+        .child(render_header(items, is_all_paused, show_settings, on_enter_mini))
         // 2. 核心内容滚动区：抽屉展开与列表统一容纳，高了自行平滑滚动，大窗口全程稳定
         .child(
             scroll()
@@ -416,11 +473,237 @@ pub fn App() -> impl IntoElement {
         .child(render_footer(items, opacity))
 }
 
-/// 顶部 Header：左侧金黄微标与标题，右侧挂件操作按钮组（暂停、设置/添加、关闭退出）
+/// 迷你胶囊挂件形态（Mini Pill / Dynamic Island）：仅 220x44 像素，支持全屏自由拖动、显示最优先提醒、一键完成打卡与一键展开
+fn render_mini_capsule(
+    items: Signal<Vec<ReminderItem>>,
+    is_all_paused: Signal<bool>,
+    on_expand: impl Fn() + Copy + 'static,
+) -> impl IntoElement {
+    let active_item_info = computed(move || {
+        items.with(|list| {
+            if list.is_empty() {
+                return None;
+            }
+            // 优先展示第一个已到期的任务
+            if let Some((idx, it)) = list.iter().enumerate().find(|(_, it)| it.is_expired()) {
+                return Some((idx, it.clone(), list.len()));
+            }
+            // 其次展示剩余时间最短的未暂停任务
+            let min_active = list
+                .iter()
+                .enumerate()
+                .filter(|(_, it)| !it.is_paused)
+                .min_by_key(|(_, it)| it.remaining_secs);
+            if let Some((idx, it)) = min_active {
+                return Some((idx, it.clone(), list.len()));
+            }
+            // 否则展示列表第一项
+            Some((0, list[0].clone(), list.len()))
+        })
+    });
+
+    view()
+        .window_drag(true) // 按住胶囊任意空白处可随意拖动
+        .w_full()
+        .h_full()
+        .px(px(8.0))
+        .py(px(4.0))
+        .flex_row()
+        .items_center()
+        .justify_between()
+        // 左侧微型环形进度图标
+        .child(
+            view()
+                .w(px(28.0))
+                .h(px(28.0))
+                .items_center()
+                .justify_center()
+                .text_color(move || theme().foreground)
+                .child(
+                    svg(move || {
+                        if let Some((_, it, _)) = active_item_info.get() {
+                            let is_exp = it.is_expired();
+                            let color = if is_exp { "#ef4444" } else { icons::get_item_color(&it.icon) };
+                            let ratio = if is_exp { 1.0 } else { it.progress_ratio() };
+                            let markup = icons::mini_ring_progress_svg(&it.icon, ratio, color);
+                            nsh_core::element::ImageSrc::svg_markup(&markup)
+                        } else {
+                            let markup = icons::mini_ring_progress_svg("bell", 1.0, "#eab308");
+                            nsh_core::element::ImageSrc::svg_markup(&markup)
+                        }
+                    })
+                    .w(px(28.0))
+                    .h(px(28.0)),
+                ),
+        )
+        // 中间文本信息（点击文本也可展开回卡片）
+        .child(
+            view()
+                .window_drag(true)
+                .flex_1()
+                .h_full()
+                .justify_center()
+                .px(px(6.0))
+                .child(
+                    view()
+                        .flex_col()
+                        .justify_center()
+                        .gap(px(1.0))
+                        // 上行：任务名称与多项小指示
+                        .child(
+                            view()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(4.0))
+                                .child(
+                                    text(move || {
+                                        if let Some((_, it, _)) = active_item_info.get() {
+                                            it.name
+                                        } else {
+                                            "暂无提醒".to_string()
+                                        }
+                                    })
+                                    .text_size(px(12.0))
+                                    .text_color(move || theme().foreground),
+                                )
+                                .child(
+                                    when(
+                                        move || active_item_info.with(|info| info.as_ref().map_or(false, |(_, _, total)| *total > 1)),
+                                        move || {
+                                            text(move || {
+                                                active_item_info.with(|info| {
+                                                    info.as_ref().map_or("".to_string(), |(idx, _, total)| {
+                                                        format!("{}/{}", idx + 1, total)
+                                                    })
+                                                })
+                                            })
+                                            .text_size(px(9.5))
+                                            .text_color(move || theme().muted_foreground)
+                                        },
+                                    ),
+                                ),
+                        )
+                        // 下行：倒计时时间或警示状态
+                        .child(
+                            view()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(4.0))
+                                .child(
+                                    text(move || {
+                                        if is_all_paused.get() {
+                                            "已暂停".to_string()
+                                        } else if let Some((_, it, _)) = active_item_info.get() {
+                                            if it.is_expired() {
+                                                "⚠️ 到期打卡!".to_string()
+                                            } else {
+                                                it.format_remaining()
+                                            }
+                                        } else {
+                                            "--:--".to_string()
+                                        }
+                                    })
+                                    .text_size(px(11.0))
+                                    .text_color(move || {
+                                        if is_all_paused.get() {
+                                            theme().muted_foreground
+                                        } else if active_item_info.with(|info| info.as_ref().map_or(false, |(_, it, _)| it.is_expired())) {
+                                            theme().destructive
+                                        } else {
+                                            ACCENT_GOLD
+                                        }
+                                    }),
+                                ),
+                        ),
+                ),
+        )
+        // 右侧操作按钮组（快捷打卡、展开为卡片、关闭）
+        .child(
+            view()
+                .window_drag(false) // 按钮区域不触发拖拽
+                .flex_row()
+                .items_center()
+                .gap(px(4.0))
+                // 快捷打卡对勾按钮（特别是在到期时一键打卡）
+                .child(
+                    view()
+                        .w(px(22.0))
+                        .h(px(22.0))
+                        .rounded(px(5.0))
+                        .items_center()
+                        .justify_center()
+                        .bg(move || {
+                            let is_exp = active_item_info.with(|info| info.as_ref().map_or(false, |(_, it, _)| it.is_expired()));
+                            if is_exp {
+                                ACCENT_GOLD_BG
+                            } else {
+                                theme().secondary
+                            }
+                        })
+                        .border_1()
+                        .border_color(move || {
+                            let is_exp = active_item_info.with(|info| info.as_ref().map_or(false, |(_, it, _)| it.is_expired()));
+                            if is_exp {
+                                ACCENT_GOLD
+                            } else {
+                                theme().border
+                            }
+                        })
+                        .active(|s| s.opacity(0.5))
+                        .on_press(move || {
+                            if let Some((idx, _, _)) = active_item_info.get() {
+                                items.update(|list| {
+                                    if idx < list.len() {
+                                        list[idx].complete();
+                                    }
+                                });
+                            }
+                        })
+                        .child(
+                            icons::icon_svg(
+                                icons::ICON_CHECK,
+                                12.0,
+                                move || {
+                                    let is_exp = active_item_info.with(|info| info.as_ref().map_or(false, |(_, it, _)| it.is_expired()));
+                                    if is_exp {
+                                        ACCENT_GOLD
+                                    } else {
+                                        theme().muted_foreground
+                                    }
+                                },
+                            ),
+                        ),
+                )
+                // 展开为大卡片按钮
+                .child(
+                    view()
+                        .w(px(22.0))
+                        .h(px(22.0))
+                        .rounded(px(5.0))
+                        .items_center()
+                        .justify_center()
+                        .bg(move || theme().secondary)
+                        .border_1()
+                        .border_color(move || theme().border)
+                        .active(|s| s.opacity(0.5))
+                        .on_press(on_expand)
+                        .child(
+                            icons::icon_svg(
+                                icons::ICON_EXPAND,
+                                11.0,
+                                move || theme().muted_foreground,
+                            ),
+                        ),
+                ),
+        )
+}
+
+/// 顶部 Header：左侧金黄微标与标题，右侧挂件操作按钮组（暂停、设置/添加、收起为胶囊、关闭退出）
 fn render_header(
     items: Signal<Vec<ReminderItem>>,
     is_all_paused: Signal<bool>,
     show_settings: Signal<bool>,
+    on_enter_mini: impl Fn() + Copy + 'static,
 ) -> impl IntoElement {
     let count_text = computed(move || items.with(|list| format!("{} 项", list.len())));
 
@@ -534,6 +817,27 @@ fn render_header(
                                         theme().muted_foreground
                                     }
                                 },
+                            ),
+                        ),
+                )
+                // 收起为迷你灵动岛胶囊
+                .child(
+                    view()
+                        .w(px(22.0))
+                        .h(px(22.0))
+                        .rounded(px(5.0))
+                        .items_center()
+                        .justify_center()
+                        .bg(move || theme().secondary)
+                        .border_1()
+                        .border_color(move || theme().border)
+                        .active(|s| s.opacity(0.5))
+                        .on_press(on_enter_mini)
+                        .child(
+                            icons::icon_svg(
+                                icons::ICON_MINIMIZE,
+                                11.0,
+                                move || theme().muted_foreground,
                             ),
                         ),
                 )
@@ -1725,6 +2029,14 @@ fn render_drawer(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_window_dimension_constants() {
+        assert!(MINI_WIDTH < WINDOW_WIDTH);
+        assert!(MINI_HEIGHT < WINDOW_HEIGHT);
+        assert_eq!(MINI_WIDTH, 196.0);
+        assert_eq!(MINI_HEIGHT, 44.0);
+    }
 
     #[test]
     fn test_opacity_clamp_range() {
