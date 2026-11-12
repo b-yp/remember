@@ -366,17 +366,24 @@ pub fn App() -> impl IntoElement {
     })));
 
     // 根视图容器：基于 NSH 官方 theme().card 与 theme().border，原生自适应明暗，支持随意拖拽
-    view()
+    // Windows 下由 Win11 DWM 硬件级圆角与边框 (DWMWCP_ROUND) 托管裁剪与边框阴影，
+    // 若在根视图重复叠加 rounded 与 border 会因曲率不一致产生四角双层重影，故仅在非 Windows (如 macOS) 应用视图层圆角边框。
+    let root = view()
         .window_drag(true) // 按住卡片空白处即可随意拖动窗口
         .w_full()
         .h_full()
         .bg(move || theme().card)
-        .border_1()
-        .border_color(move || theme().border)
-        .rounded(px(12.0))
         .p(px(14.0))
         .flex_col()
-        .justify_between()
+        .justify_between();
+
+    #[cfg(not(target_os = "windows"))]
+    let root = root
+        .border_1()
+        .border_color(move || theme().border)
+        .rounded(px(12.0));
+
+    root
         // 1. 顶栏：通用「reminder 提醒」金黄微标与标题，右侧挂件操作按钮组（暂停、设置、关闭）
         .child(render_header(items, is_all_paused, show_settings))
         // 2. 核心内容滚动区：抽屉展开与列表统一容纳，高了自行平滑滚动，大窗口全程稳定
