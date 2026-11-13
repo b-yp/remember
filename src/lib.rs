@@ -12,7 +12,7 @@ pub use storage::AppState;
 use std::time::Duration;
 use nsh_core::prelude::*;
 use nsh_core::element::{desktop, input, AdaptiveColor};
-use nsh_core::desktop::{WindowFrame, WindowLevel};
+use nsh_core::desktop::{WindowAttributes, WindowFrame, WindowLevel};
 use nsh_base::{SliderValue, slider, collapsible, theme};
 use model::ReminderItem;
 use theme_mode::{ThemeMode, ACCENT_GOLD, ACCENT_GOLD_BG};
@@ -319,10 +319,18 @@ pub const WINDOW_HEIGHT: f32 = 350.0;
 pub const MINI_WIDTH: f32 = 196.0;
 pub const MINI_HEIGHT: f32 = 44.0;
 
+/// 仅设置「置顶悬浮」层级的窗口属性
+/// （`WindowAttributes` 为 `non_exhaustive`，故用 Default 赋值而非结构体字面量）
+fn floating_window_attributes() -> WindowAttributes {
+    let mut attributes = WindowAttributes::default();
+    attributes.level = Some(WindowLevel::Floating);
+    attributes
+}
+
 /// 触发倒计时到期提醒（声音、系统原生通知、窗口置顶唤起）
 pub fn trigger_reminder_alarm(item_name: &str) {
     // 1. 窗口唤起置顶：确保用户即使在打游戏或全屏工作也能看到悬浮挂件
-    desktop::order_front();
+    desktop::main_window().focus();
 
     // 2. 播放系统提醒音
     #[cfg(target_os = "windows")]
@@ -385,9 +393,9 @@ pub fn App() -> impl IntoElement {
     setup_floating_window(initial_state.window_pos);
 
     // 2. 窗口原生桌面属性：置顶悬浮 (Floating)
-    desktop::set_level(WindowLevel::Floating);
+    desktop::main_window().set(floating_window_attributes());
 
-    // 3. 统一标准挂件尺寸：非 Windows 平台直接由 set_frame 设置坐标，Windows 由 setup_floating_window 恢复物理像素坐标
+    // 3. 统一标准挂件尺寸：非 Windows 平台直接由 set_bounds 设置坐标，Windows 由 setup_floating_window 恢复物理像素坐标
     #[cfg(target_os = "windows")]
     let (frame_x, frame_y) = (None, None);
     #[cfg(not(target_os = "windows"))]
@@ -402,7 +410,7 @@ pub fn App() -> impl IntoElement {
         (WINDOW_WIDTH, WINDOW_HEIGHT)
     };
 
-    desktop::set_frame(WindowFrame {
+    desktop::main_window().set_bounds(WindowFrame {
         x: frame_x,
         y: frame_y,
         width: Some(px(init_w)),
@@ -504,7 +512,7 @@ pub fn App() -> impl IntoElement {
     let enter_mini = move || {
         is_mini.set(true);
         show_settings.set(false);
-        desktop::set_frame(WindowFrame {
+        desktop::main_window().set_bounds(WindowFrame {
             width: Some(px(MINI_WIDTH)),
             height: Some(px(MINI_HEIGHT)),
             ..Default::default()
@@ -514,7 +522,7 @@ pub fn App() -> impl IntoElement {
 
     let enter_full = move || {
         is_mini.set(false);
-        desktop::set_frame(WindowFrame {
+        desktop::main_window().set_bounds(WindowFrame {
             width: Some(px(WINDOW_WIDTH)),
             height: Some(px(WINDOW_HEIGHT)),
             ..Default::default()
@@ -995,7 +1003,7 @@ fn render_header(
                         .active(|s| s.opacity(0.5))
                         .on_press(move || {
                             on_save();
-                            desktop::close_window();
+                            desktop::main_window().close();
                         })
                         .child(
                             icons::icon_svg(icons::ICON_X, 11.0, move || theme().muted_foreground),
