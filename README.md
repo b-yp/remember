@@ -42,3 +42,11 @@ declarations of `reminder/native` into `.nsh/types`. Register more with `registr
 
 NSH-generated files stay in `.nsh/`: runner sources in `.nsh/rust/` and default packages in `.nsh/out/`.
 Cargo keeps its normal `target/` directory and respects your existing `CARGO_TARGET_DIR`.
+
+## Skills
+
+The agent skills this project uses are pinned in `skills-lock.json`: `nsh` and `nsh-design-guides`
+from `longbridge/nsh`. Their content is not committed (`.agents/` is ignored), so a fresh clone has
+none. To restore them, copy each entry's `skillPath` from its `source` repository into
+`.agents/skills/<name>/` and check the result against `computedHash`.
+
