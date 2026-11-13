@@ -2,9 +2,10 @@
 //! 基础界面配色完全遵循 NSH 官方标准的 `nsh_base::theme()`（基于 shadcn/ui 设计令牌）
 
 use nsh_core::prelude::*;
+use serde::{Deserialize, Serialize};
 
 /// 主题模式枚举
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum ThemeMode {
     #[default]
     Dark,

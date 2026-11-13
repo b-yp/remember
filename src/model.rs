@@ -1,18 +1,39 @@
 use std::sync::atomic::{AtomicU64, Ordering};
+use serde::{Deserialize, Serialize};
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
+fn default_item_id() -> u64 {
+    NEXT_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+/// 初始化下一个分配的 ID，确保反序列化后新建项目的 ID 不与已有项目冲突
+pub fn init_next_id(start_id: u64) {
+    let mut current = NEXT_ID.load(Ordering::Relaxed);
+    while current < start_id {
+        match NEXT_ID.compare_exchange_weak(current, start_id, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => break,
+            Err(actual) => current = actual,
+        }
+    }
+}
+
 /// 提醒项目模型（纯数据结构，与 UI 生命周期 Owner 解耦，安全可靠）
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ReminderItem {
+    #[serde(default = "default_item_id")]
     pub id: u64,
     pub name: String,
     pub icon: String,
     pub interval_secs: u32,
+    #[serde(default)]
     pub remaining_secs: u32,
+    #[serde(default)]
     pub completed_count: u32,
+    #[serde(default)]
     pub is_paused: bool,
     /// 倒计时归零后的超时持续秒数（用于超时动态统计与持续提醒，避免静止在0）
+    #[serde(default)]
     pub overdue_secs: u32,
 }
 

@@ -3,7 +3,11 @@
 
 pub mod icons;
 pub mod model;
+pub mod storage;
 pub mod theme_mode;
+
+use storage::load_state;
+pub use storage::AppState;
 
 use std::time::Duration;
 use nsh_core::prelude::*;
@@ -149,7 +153,7 @@ fn configure_macos_window() {
 
 /// macOS 挂件专用：配置为纯净无边框悬浮卡片，移除全部系统控制按钮与标题栏非客户区，保留原生圆角与阴影
 #[cfg(target_os = "macos")]
-fn setup_floating_window() {
+fn setup_floating_window(_initial_pos: Option<(i32, i32)>) {
     dispatch2::DispatchQueue::main().exec_async(configure_macos_window);
 
     // 在主线程启动并渲染前几个周期内再次确认配置，确保覆盖 AppKit 任何后续重置
@@ -163,8 +167,8 @@ fn setup_floating_window() {
 
 /// Windows 挂件专用：配置为纯净无边框悬浮卡片，移除全部系统按钮与非客户区，保留 Win11 硬件圆角与阴影
 #[cfg(target_os = "windows")]
-fn setup_floating_window() {
-    std::thread::spawn(|| {
+fn setup_floating_window(initial_pos: Option<(i32, i32)>) {
+    std::thread::spawn(move || {
         use platform::windows::Win32::Foundation::{HWND, LPARAM, COLORREF};
         use platform::windows::Win32::System::Threading::GetCurrentProcessId;
         use platform::windows::Win32::UI::WindowsAndMessaging::*;
@@ -228,21 +232,84 @@ fn setup_floating_window() {
                         std::mem::size_of::<i32>() as u32,
                     );
 
-                    // 5. 刷新非客户区，不改变位置、不改变尺寸、不改变Z序、不抢焦点
+                    // 5. 刷新非客户区，恢复历史摆放坐标 (x, y)
+                    let (flags, x, y) = if let Some((x, y)) = initial_pos {
+                        if is_position_visible(x, y) {
+                            (SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED, x, y)
+                        } else {
+                            (SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED, 0, 0)
+                        }
+                    } else {
+                        (SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED, 0, 0)
+                    };
+
                     let _ = SetWindowPos(
                         target_hwnd,
                         None,
+                        x,
+                        y,
                         0,
                         0,
-                        0,
-                        0,
-                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+                        flags,
                     );
                 }
                 break;
             }
         }
     });
+}
+
+/// 获取当前窗口在桌面上的物理像素绝对坐标 (x, y)
+#[cfg(target_os = "windows")]
+pub fn get_window_position() -> Option<(i32, i32)> {
+    let raw = APP_HWND.load(std::sync::atomic::Ordering::SeqCst);
+    if raw == 0 {
+        return None;
+    }
+    use platform::windows::Win32::Foundation::{HWND, RECT};
+    use platform::windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+    let hwnd = HWND(raw as *mut _);
+    let mut rect = RECT::default();
+    unsafe {
+        if GetWindowRect(hwnd, &mut rect).is_ok() {
+            if rect.left > -10000 && rect.top > -10000 && rect.left < 50000 && rect.top < 50000 {
+                return Some((rect.left, rect.top));
+            }
+        }
+    }
+    None
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn get_window_position() -> Option<(i32, i32)> {
+    None
+}
+
+/// 检查给定坐标在当前桌面环境（含多显示器虚拟桌面）中是否可见，防止拔掉外接屏幕后窗口丢失在屏幕外
+#[cfg(target_os = "windows")]
+pub fn is_position_visible(x: i32, y: i32) -> bool {
+    use platform::windows::Win32::UI::WindowsAndMessaging::*;
+    unsafe {
+        let vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+        let vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        let vcx = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+        let vcy = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+
+        let (vx, vy, vcx, vcy) = if vcx > 0 && vcy > 0 {
+            (vx, vy, vcx, vcy)
+        } else {
+            let cx = GetSystemMetrics(SM_CXSCREEN);
+            let cy = GetSystemMetrics(SM_CYSCREEN);
+            (0, 0, cx.max(800), cy.max(600))
+        };
+
+        x + 50 > vx && x < vx + vcx - 50 && y + 50 > vy && y < vy + vcy - 50
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn is_position_visible(_x: i32, _y: i32) -> bool {
+    true
 }
 
 /// 统一窗口尺寸规范（逻辑像素，自动由 NSH 处理 High-DPI 缩放，杜绝模糊与尺寸割裂）
@@ -306,59 +373,120 @@ const PRESETS: &[PresetReminder] = &[
 /// 应用程序根组件
 #[component]
 pub fn App() -> impl IntoElement {
-    // 1. 挂件专用配置：在 Windows 与 macOS 上彻底剥离系统标题栏、边框与控制按钮，呈现纯净无边框悬浮卡片
+    // 0. 加载本地数据持久化配置（含离线时间流逝补偿、自增 ID 同步与历史窗口坐标）
+    let initial_state = load_state();
+
+    // 预设透明度与主题（确保悬浮窗挂载时无闪烁）
+    set_native_dark_mode(initial_state.theme_mode != ThemeMode::Light);
+    set_native_window_opacity(initial_state.opacity);
+
+    // 1. 挂件专用配置：在 Windows 与 macOS 上彻底剥离系统标题栏、边框与控制按钮，呈现纯净无边框悬浮卡片并恢复历史摆放位置
     #[cfg(any(target_os = "windows", target_os = "macos"))]
-    setup_floating_window();
+    setup_floating_window(initial_state.window_pos);
 
     // 2. 窗口原生桌面属性：置顶悬浮 (Floating)
     desktop::set_level(WindowLevel::Floating);
 
-    // 3. 统一标准精致挂件尺寸：启动时一次性初始化，全程锁定尺寸不变，彻底杜绝原生窗口 Resize 引起的任何硬件重影与闪烁
+    // 3. 统一标准挂件尺寸：非 Windows 平台直接由 set_frame 设置坐标，Windows 由 setup_floating_window 恢复物理像素坐标
+    #[cfg(target_os = "windows")]
+    let (frame_x, frame_y) = (None, None);
+    #[cfg(not(target_os = "windows"))]
+    let (frame_x, frame_y) = (
+        initial_state.window_pos.map(|(x, _)| px(x as f32)),
+        initial_state.window_pos.map(|(_, y)| px(y as f32)),
+    );
+
+    let (init_w, init_h) = if initial_state.is_mini {
+        (MINI_WIDTH, MINI_HEIGHT)
+    } else {
+        (WINDOW_WIDTH, WINDOW_HEIGHT)
+    };
+
     desktop::set_frame(WindowFrame {
-        width: Some(px(WINDOW_WIDTH)),
-        height: Some(px(WINDOW_HEIGHT)),
+        x: frame_x,
+        y: frame_y,
+        width: Some(px(init_w)),
+        height: Some(px(init_h)),
         ..Default::default()
     });
 
-    // 4. 主题模式状态：默认深色模式，支持明暗切换与跟随系统
-    let theme_mode = signal(ThemeMode::Dark);
+    // 4. 响应式状态管理（由持久化数据初始化）
+    let theme_mode = signal(initial_state.theme_mode);
+    let items = signal(initial_state.items);
+    let is_all_paused = signal(initial_state.is_all_paused);
+    let opacity = signal(initial_state.opacity);
+    let is_mini = signal(initial_state.is_mini);
+    let last_saved_pos = signal(initial_state.window_pos);
+    let show_settings = signal(false);
+    let show_presets = signal(false);
+    let show_custom_form = signal(false);
 
-    // 主题与底层平台/渲染器联动：切换 NSH 官方色彩方案与 Windows DWM 深浅色
+    // 统一配置持久化回调
+    let save_app_state = {
+        move || {
+            let win_pos = get_window_position().or_else(|| last_saved_pos.get());
+            storage::persist_current(
+                &items.get(),
+                theme_mode.get(),
+                opacity.get(),
+                is_mini.get(),
+                is_all_paused.get(),
+                win_pos,
+            );
+        }
+    };
+
+    // 主题与底层平台/渲染器联动：切换 NSH 官方色彩方案与 Windows DWM 深浅色，并在后续改动时自动保存
+    let theme_initialized = stored(false);
     effect(move || {
         let mode = theme_mode.get();
         nsh_core::element::set_color_scheme(mode.to_appearance());
         set_native_dark_mode(mode != ThemeMode::Light);
+        if !theme_initialized.get() {
+            theme_initialized.replace(true);
+        } else {
+            save_app_state();
+        }
     });
 
-    // 5. 状态管理：默认预置通用基础提醒（喝水 30min、活动 45min、带薪拉屎 90min）
-    let items = signal(vec![
-        ReminderItem::new("喝水", "droplet", 30 * 60),
-        ReminderItem::new("起身活动", "walk", 45 * 60),
-        ReminderItem::new("带薪拉屎", "toilet", 90 * 60),
-    ]);
-
-    // 全局暂停状态与设置面板展开状态，以及窗口不透明度状态 (0.2 ~ 1.0)
-    let is_all_paused = signal(false);
-    let show_settings = signal(false);
-    let show_presets = signal(false);
-    let show_custom_form = signal(false);
-    let opacity = signal(1.0_f32);
-
-    // 窗口不透明度响应式联动：当 opacity 发生变化时，实时调用原生窗口 API
+    // 窗口不透明度响应式联动：当 opacity 发生变化时，实时调用原生窗口 API 并在后续改动时自动保存
+    let opacity_initialized = stored(false);
     effect(move || {
         let val = opacity.get();
         apply_window_opacity(val);
+        if !opacity_initialized.get() {
+            opacity_initialized.replace(true);
+        } else {
+            save_app_state();
+        }
     });
 
-    // 每秒驱动倒计时更新与到期提醒
+    // 每秒驱动倒计时更新与到期提醒，检测窗口拖动并定期同步时间戳（提供离线流逝时间基准）与位置变动
+    let tick_count = std::rc::Rc::new(std::cell::Cell::new(0u64));
+    let tick_count_cloned = tick_count.clone();
     let tick_timer = stored(None::<Spawned<()>>);
     tick_timer.replace(Some(set_interval(Duration::from_secs(1), move || {
+        let count = tick_count_cloned.get() + 1;
+        tick_count_cloned.set(count);
+
+        // 1. 窗口位置变动检测与自动持久化（拖拽释放后 1 秒内保存）
+        let mut pos_changed = false;
+        if let Some(pos) = get_window_position() {
+            if last_saved_pos.get() != Some(pos) {
+                last_saved_pos.set(Some(pos));
+                pos_changed = true;
+            }
+        }
+
+        // 2. 倒计时与提醒驱动
+        let mut state_changed = pos_changed;
         if !is_all_paused.get() {
             let mut newly_expired = Vec::new();
             items.update(|list| {
                 for item in list.iter_mut() {
                     if item.tick() {
                         newly_expired.push(item.name.clone());
+                        state_changed = true;
                     }
                 }
             });
@@ -366,9 +494,12 @@ pub fn App() -> impl IntoElement {
                 trigger_reminder_alarm(&name);
             }
         }
-    })));
 
-    let is_mini = signal(false);
+        // 每 15 秒同步一次（确保离线补偿时间戳最新），或在窗口移动/任务到期时立即同步
+        if count % 15 == 0 || state_changed {
+            save_app_state();
+        }
+    })));
 
     let enter_mini = move || {
         is_mini.set(true);
@@ -378,6 +509,7 @@ pub fn App() -> impl IntoElement {
             height: Some(px(MINI_HEIGHT)),
             ..Default::default()
         });
+        save_app_state();
     };
 
     let enter_full = move || {
@@ -387,6 +519,7 @@ pub fn App() -> impl IntoElement {
             height: Some(px(WINDOW_HEIGHT)),
             ..Default::default()
         });
+        save_app_state();
     };
 
     // 根视图容器：基于 NSH 官方 theme().card 与 theme().border，原生自适应明暗，支持随意拖拽
@@ -407,7 +540,7 @@ pub fn App() -> impl IntoElement {
     root.child(
         when(
             move || is_mini.get(),
-            move || render_mini_capsule(items, is_all_paused, enter_full),
+            move || render_mini_capsule(items, is_all_paused, enter_full, save_app_state),
         )
         .otherwise(move || {
             render_full_card(
@@ -419,6 +552,7 @@ pub fn App() -> impl IntoElement {
                 opacity,
                 theme_mode,
                 enter_mini,
+                save_app_state,
             )
         }),
     )
@@ -434,6 +568,7 @@ fn render_full_card(
     opacity: Signal<f32>,
     theme_mode: Signal<ThemeMode>,
     on_enter_mini: impl Fn() + Copy + 'static,
+    on_save: impl Fn() + Copy + 'static,
 ) -> impl IntoElement {
     view()
         .w_full()
@@ -442,7 +577,7 @@ fn render_full_card(
         .flex_col()
         .justify_between()
         // 1. 顶栏：通用「reminder 提醒」金黄微标与标题，右侧挂件操作按钮组（暂停、设置、收起胶囊、关闭）
-        .child(render_header(items, is_all_paused, show_settings, on_enter_mini))
+        .child(render_header(items, is_all_paused, show_settings, on_enter_mini, on_save))
         // 2. 核心内容滚动区：抽屉展开与列表统一容纳，高了自行平滑滚动，大窗口全程稳定
         .child(
             scroll()
@@ -464,9 +599,10 @@ fn render_full_card(
                             items,
                             opacity,
                             theme_mode,
+                            on_save,
                         ))
                         // 核心提醒列表
-                        .child(render_items(items)),
+                        .child(render_items(items, on_save)),
                 ),
         )
         // 3. 底部状态行（通用统计：「进行中 X 项 · 今日打卡 Y 次」，若处于半透明状态则额外指示不透明度）
@@ -478,6 +614,7 @@ fn render_mini_capsule(
     items: Signal<Vec<ReminderItem>>,
     is_all_paused: Signal<bool>,
     on_expand: impl Fn() + Copy + 'static,
+    on_save: impl Fn() + Copy + 'static,
 ) -> impl IntoElement {
     let active_item_info = computed(move || {
         items.with(|list| {
@@ -657,6 +794,7 @@ fn render_mini_capsule(
                                         list[idx].complete();
                                     }
                                 });
+                                on_save();
                             }
                         })
                         .child(
@@ -704,6 +842,7 @@ fn render_header(
     is_all_paused: Signal<bool>,
     show_settings: Signal<bool>,
     on_enter_mini: impl Fn() + Copy + 'static,
+    on_save: impl Fn() + Copy + 'static,
 ) -> impl IntoElement {
     let count_text = computed(move || items.with(|list| format!("{} 项", list.len())));
 
@@ -772,7 +911,10 @@ fn render_header(
                         .justify_center()
                         .bg(move || theme().secondary)
                         .active(|s| s.opacity(0.5))
-                        .on_press(move || is_all_paused.update(|v| *v = !*v))
+                        .on_press(move || {
+                            is_all_paused.update(|v| *v = !*v);
+                            on_save();
+                        })
                         .child(
                             when(
                                 move || is_all_paused.get(),
@@ -851,7 +993,10 @@ fn render_header(
                         .justify_center()
                         .bg(move || theme().secondary)
                         .active(|s| s.opacity(0.5))
-                        .on_press(desktop::close_window)
+                        .on_press(move || {
+                            on_save();
+                            desktop::close_window();
+                        })
                         .child(
                             icons::icon_svg(icons::ICON_X, 11.0, move || theme().muted_foreground),
                         ),
@@ -860,7 +1005,10 @@ fn render_header(
 }
 
 /// 核心列表：基于 each 原语基于 key 响应式高效追踪每个 item 的变化
-fn render_items(items: Signal<Vec<ReminderItem>>) -> impl IntoElement {
+fn render_items(
+    items: Signal<Vec<ReminderItem>>,
+    on_save: impl Fn() + Copy + 'static,
+) -> impl IntoElement {
     view()
         .window_drag(true)
         .w_full()
@@ -869,7 +1017,7 @@ fn render_items(items: Signal<Vec<ReminderItem>>) -> impl IntoElement {
         .child(each(
             items,
             |item| item.id,
-            move |item_sig, _| render_item_row(item_sig, items),
+            move |item_sig, _| render_item_row(item_sig, items, on_save),
         ))
 }
 
@@ -877,6 +1025,7 @@ fn render_items(items: Signal<Vec<ReminderItem>>) -> impl IntoElement {
 fn render_item_row(
     item_sig: ReadSignal<ReminderItem>,
     items: Signal<Vec<ReminderItem>>,
+    on_save: impl Fn() + Copy + 'static,
 ) -> impl IntoElement {
     let item_id = item_sig.get_untracked().id;
     let icon_key = item_sig.get_untracked().icon.clone();
@@ -967,6 +1116,7 @@ fn render_item_row(
                                                     it.update_interval_mins(next_m);
                                                 }
                                             });
+                                            on_save();
                                         })
                                         .child(
                                             text(move || format!("{}m", item_sig.get().interval_secs / 60))
@@ -1049,6 +1199,7 @@ fn render_item_row(
                                             it.complete();
                                         }
                                     });
+                                    on_save();
                                 })
                                 .child(
                                     icons::dynamic_icon_svg(
@@ -1082,6 +1233,7 @@ fn render_item_row(
                                             it.snooze(300);
                                         }
                                     });
+                                    on_save();
                                 })
                                 .child(
                                     text("+5")
@@ -1101,6 +1253,7 @@ fn render_item_row(
                                 .active(|s| s.opacity(0.5))
                                 .on_press(move || {
                                     items.update(|list| list.retain(|x| x.id != item_id));
+                                    on_save();
                                 })
                                 .child(
                                     icons::icon_svg(
@@ -1156,6 +1309,7 @@ fn render_footer(
 fn render_preset_card(
     preset: &'static PresetReminder,
     items: Signal<Vec<ReminderItem>>,
+    on_save: impl Fn() + Copy + 'static,
 ) -> impl IntoElement {
     let name = preset.name;
     let icon = preset.icon_key;
@@ -1193,6 +1347,7 @@ fn render_preset_card(
                         mins * 60,
                     ));
                 });
+                on_save();
             }
         })
         .flex_row()
@@ -1258,6 +1413,7 @@ fn render_drawer(
     items: Signal<Vec<ReminderItem>>,
     opacity: Signal<f32>,
     theme_mode: Signal<ThemeMode>,
+    on_save: impl Fn() + Copy + 'static,
 ) -> impl IntoElement {
     let custom_name = signal(String::new());
     let custom_mins_str = signal("30".to_string());
@@ -1563,7 +1719,7 @@ fn render_drawer(
                                         .flex_row()
                                         .gap(px(4.5))
                                         .children(pair.iter().map(|preset| {
-                                            render_preset_card(preset, items)
+                                            render_preset_card(preset, items, on_save)
                                         }))
                                 })),
                         ),
@@ -2010,6 +2166,7 @@ fn render_drawer(
                                                             mins * 60,
                                                         ));
                                                     });
+                                                    on_save();
                                                     custom_name.set(String::new());
                                                     error_tip.set(None);
                                                     show_custom_form.set(false);
@@ -2067,5 +2224,50 @@ mod tests {
     fn test_input_element() {
         use nsh_core::element::input;
         let _ = input().placeholder("测试输入");
+    }
+
+    #[test]
+    fn test_window_position_query() {
+        // 在未挂载 HWND 时安全返回 None，绝不崩溃
+        let _ = get_window_position();
+    }
+
+    #[test]
+    fn test_is_position_visible() {
+        // 屏幕中心正常坐标应可见
+        assert!(is_position_visible(100, 100));
+        // 极端离谱坐标（多屏拔除后或异常数据）应被识别为不可见
+        assert!(!is_position_visible(999999, 999999));
+        assert!(!is_position_visible(-999999, -999999));
+    }
+
+    #[test]
+    fn test_full_persistence_integration() {
+        let temp_dir = std::env::temp_dir().join(format!("reminder_integ_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let test_file = temp_dir.join("state.json");
+
+        let mut state = storage::AppState::default();
+        state.opacity = 0.75;
+        state.theme_mode = ThemeMode::Light;
+        state.window_pos = Some((500, 300));
+        state.is_mini = true;
+        state.items.push(ReminderItem::new("自定义喝咖啡", "coffee", 1800));
+        state.items[0].completed_count = 12;
+
+        let res = storage::save_state_to_path(&mut state, &test_file);
+        assert!(res.is_ok());
+
+        let loaded = storage::load_state_from_path(&test_file);
+        assert_eq!(loaded.opacity, 0.75);
+        assert_eq!(loaded.theme_mode, ThemeMode::Light);
+        assert_eq!(loaded.window_pos, Some((500, 300)));
+        assert!(loaded.is_mini);
+        assert_eq!(loaded.items.len(), 4);
+        assert_eq!(loaded.items[0].completed_count, 12);
+        assert_eq!(loaded.items[3].name, "自定义喝咖啡");
+
+        let _ = std::fs::remove_file(&test_file);
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

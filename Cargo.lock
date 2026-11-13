@@ -1821,12 +1821,15 @@ version = "0.1.0"
 dependencies = [
  "dispatch2",
  "env_logger",
+ "log",
  "notify-rust",
  "nsh-base",
  "nsh-core",
  "nsh-platform-linux",
  "nsh-platform-macos",
  "nsh-platform-windows",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
